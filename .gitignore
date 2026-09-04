@@ -14,7 +14,7 @@ __pycache__/
 .codex_full_lint/
 .codex_lint_work/
 
-# FPGA/simulation generated files
+# FPGA and simulation generated files
 work/
 *.jou
 *.log
@@ -24,3 +24,4 @@ work/
 *.fst
 *.bin
 transcript
+
