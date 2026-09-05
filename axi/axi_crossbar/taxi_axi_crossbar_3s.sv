@@ -15,32 +15,36 @@ Authors:
 /*
  * AXI4 crossbar
  */
-module taxi_axi_crossbar_2s #
+module taxi_axi_crossbar_3s #
 (
+    // Number of AXI inputs (slave interfaces)
+    parameter S_COUNT = 6,
     // Number of AXI outputs (master interfaces)
-    parameter M_COUNT = 2,
+    parameter M_COUNT = 3,
     // Address width in bits for address decoding
     parameter ADDR_W = 32,
     // TODO fix parametrization once verilator issue 5890 is fixed
     // Number of concurrent unique IDs
-    parameter S_THREADS = {4{32'd2}},
+    parameter S_THREADS = {S_COUNT{32'd2}},
     // Number of concurrent operations for each slave interface
     // 1 concatenated fields of 32 bits
-    parameter S_ACCEPT = {4{32'd16}},
+    parameter S_ACCEPT = {S_COUNT{32'd16}},
     // Number of regions per master interface
     parameter M_REGIONS = 1,
     // Master interface base addresses
     // M_COUNT concatenated fields of M_REGIONS concatenated fields of ADDR_W bits
     // set to zero for default addressing based on M_ADDR_W
     parameter M_BASE_ADDR = {
-    32'h4000_0000, // m_axi[1]
-    32'h0000_0000  // m_axi[0]
+    32'h4000_4000, // m_axi[2]: MMIO configuration window
+    32'h4000_0000, // m_axi[1]: UART
+    32'h0000_0000  // m_axi[0]: DDR
     },
     // Master interface address widths
     // M_COUNT concatenated fields of M_REGIONS concatenated fields of 32 bits
     parameter M_ADDR_W = {
-    32'd12,  // m_axi[1]：UART，0x4000_0000～0x4000_0FFF
-    32'd30   // m_axi[0]：DDR， 0x0000_0000～0x3FFF_FFFF
+    32'd14,  // m_axi[2]: MMIO, 0x4000_4000-0x4000_7FFF
+    32'd12,  // m_axi[1]: UART, 0x4000_0000-0x4000_0FFF
+    32'd30   // m_axi[0]: DDR,  0x0000_0000-0x3FFF_FFFF
     },
     // Number of concurrent operations for each master interface
     // M_COUNT concatenated fields of 32 bits
@@ -50,19 +54,19 @@ module taxi_axi_crossbar_2s #
     parameter M_SECURE = {M_COUNT{1'b0}},
     // Slave interface AW channel register type (input)
     // 0 to bypass, 1 for simple buffer, 2 for skid buffer
-    parameter S_AW_REG_TYPE = {4{2'd0}},
+    parameter S_AW_REG_TYPE = {S_COUNT{2'd0}},
     // Slave interface W channel register type (input)
     // 0 to bypass, 1 for simple buffer, 2 for skid buffer
-    parameter S_W_REG_TYPE = {4{2'd0}},
+    parameter S_W_REG_TYPE = {S_COUNT{2'd0}},
     // Slave interface B channel register type (output)
     // 0 to bypass, 1 for simple buffer, 2 for skid buffer
-    parameter S_B_REG_TYPE = {4{2'd1}},
+    parameter S_B_REG_TYPE = {S_COUNT{2'd1}},
     // Slave interface AR channel register type (input)
     // 0 to bypass, 1 for simple buffer, 2 for skid buffer
-    parameter S_AR_REG_TYPE = {4{2'd0}},
+    parameter S_AR_REG_TYPE = {S_COUNT{2'd0}},
     // Slave interface R channel register type (output)
     // 0 to bypass, 1 for simple buffer, 2 for skid buffer
-    parameter S_R_REG_TYPE = {4{2'd2}},
+    parameter S_R_REG_TYPE = {S_COUNT{2'd2}},
     // Master interface AW channel register type (output)
     // 0 to bypass, 1 for simple buffer, 2 for skid buffer
     parameter M_AW_REG_TYPE = {M_COUNT{2'd1}},
@@ -86,19 +90,19 @@ module taxi_axi_crossbar_2s #
     /*
      * AXI4 slave interface
      */
-    taxi_axi_if.wr_slv  s_axi_wr[4],
-    taxi_axi_if.rd_slv  s_axi_rd[4],
+    taxi_axi_if.wr_slv  s_axi_wr[S_COUNT],
+    taxi_axi_if.rd_slv  s_axi_rd[S_COUNT],
 
     /*
      * AXI4 master interfaces
      */
-    taxi_axi_if.wr_mst  m_axi_wr[2],
-    taxi_axi_if.rd_mst  m_axi_rd[2]
+    taxi_axi_if.wr_mst  m_axi_wr[M_COUNT],
+    taxi_axi_if.rd_mst  m_axi_rd[M_COUNT]
 );
 
 taxi_axi_crossbar_wr #(
-    .S_COUNT(4),
-    .M_COUNT(2),
+    .S_COUNT(S_COUNT),
+    .M_COUNT(M_COUNT),
     .ADDR_W(ADDR_W),
     .S_THREADS(S_THREADS),
     .S_ACCEPT(S_ACCEPT),
@@ -127,8 +131,8 @@ wr_inst (
 );
 
 taxi_axi_crossbar_rd #(
-    .S_COUNT(4),
-    .M_COUNT(2),
+    .S_COUNT(S_COUNT),
+    .M_COUNT(M_COUNT),
     .ADDR_W(ADDR_W),
     .S_THREADS(S_THREADS),
     .S_ACCEPT(S_ACCEPT),

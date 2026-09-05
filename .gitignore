@@ -1,0 +1,27 @@
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+*.code-workspace
+*.bkp
+~$*
+.$*
+
+# Python/tool caches
+__pycache__/
+*.py[cod]
+.pdf_tools/
+.codex_full_lint/
+.codex_lint_work/
+soc_export_int8/
+
+# FPGA and simulation generated files
+work/
+*.jou
+*.log
+*.str
+*.wdb
+*.vcd
+*.fst
+*.bin
+transcript
