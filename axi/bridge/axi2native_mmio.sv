@@ -7,12 +7,12 @@ module axi2native_mmio(
 
     //mmio_router native握手要的接口
     // MEM -> MMIO bridge
-    output                        mmio_req_valid,
-    input                         mmio_req_ready,
-    output reg [`DataAddrBus]     mmio_req_addr,
-    output reg [`DataBus]         mmio_req_wdata,
-    output reg [3:0]              mmio_req_wstrb,
-    output reg                    mmio_req_write,
+    output                     mmio_req_valid,
+    input                      mmio_req_ready,
+    output  [`DataAddrBus]     mmio_req_addr,
+    output  [`DataBus]         mmio_req_wdata,
+    output  [3:0]              mmio_req_wstrb,
+    output                     mmio_req_write,
 
     // MMIO bridge -> MEM
     input                     mmio_rsp_valid,
@@ -92,16 +92,12 @@ reg [3:0] wstrb_q;
 reg [`AXI_M_ID_WIDTH-1:0] awid_q;
 reg [`DataAddrBus] awaddr_q;
 reg [`DataBus] wdata_q;
-reg [`DataBus] araddr_q;
+reg [`DataAddrBus] araddr_q;
 reg [`AXI_M_ID_WIDTH-1:0] arid_q;
-reg [`DataBus]            rdata_q;
 reg w_done;
 reg aw_done;
-reg rsp_done;
 
 //b
-// 返回之前锁存的AWID
-assign m_axi_bid   = awid_q;
 // Native侧没有错误信号，暂时固定返回OKAY
 assign m_axi_bresp = 2'b00;
 // 不使用USER
@@ -109,10 +105,6 @@ assign m_axi_buser = 1'b0;
 
 
 //r
-// 返回之前锁存的ARID
-assign m_axi_rid   = arid_q;
-// 返回锁存的Native读数据
-assign m_axi_rdata = rdata_q;
 // Native侧没有错误信号，暂时固定返回OKAY
 assign m_axi_rresp = 2'b00;
 // MMIO只支持单拍访问，因此这一拍就是最后一拍
@@ -134,18 +126,34 @@ assign m_axi_arready =
     (state == IDLE) &&
     !aw_done &&
     !w_done;
-
-// 本周期选择读请求时，禁止AW/W握手
-assign m_axi_awready =
-    (state == IDLE) &&
-    !aw_done &&
-    !select_read;
+ 
+// 本周期选择读请求时，禁止AW/W握手 
+assign m_axi_awready =  
+    (state == IDLE) &&  
+    !aw_done && 
+    !select_read;   
 
 assign m_axi_wready =
     (state == IDLE) &&
     !w_done &&
     !select_read;
     
+assign m_axi_bvalid = (state == SEND_B);
+assign mmio_req_valid = (state == WAIT_W) || (state == WAIT_AR);
+//由于不锁存读数据，直接穿透，所以native侧的读响应和axi侧的读响应要在同一个周期完成
+// 写：DONE_W 接收 Native 写响应
+// 读：SEND_R 中，AXI 接收方准备好，才接收 Native 读响应
+assign mmio_rsp_ready = (state == DONE_W) || ((state == SEND_R) && m_axi_rready);
+assign m_axi_rvalid = (state == SEND_R) && mmio_rsp_valid;
+
+assign m_axi_bid = awid_q;
+assign m_axi_rid = arid_q;
+assign mmio_req_write = (state == WAIT_W);
+assign mmio_req_addr  = (state == WAIT_W) ? awaddr_q : araddr_q;
+assign mmio_req_wdata = wdata_q;
+assign mmio_req_wstrb = (state == WAIT_W) ? wstrb_q : 4'b0000;
+assign m_axi_rdata = mmio_rsp_rdata;
+
 always @(posedge aclk or negedge arst_n) begin 
     if(!arst_n)begin
         state <= IDLE;
@@ -212,39 +220,39 @@ always @(posedge aclk or negedge arst_n) begin
     wdata_q <= 'd0;
     araddr_q <= 'd0;
     arid_q <= 'd0;
-    rdata_q <= 'd0;
     w_done <= 1'b0;
     aw_done <= 1'b0;
-    rsp_done <= 1'b0;
     end
     else begin 
         case(state) 
+
             IDLE: begin 
                 if(m_axi_arvalid && m_axi_arready) begin
                     arid_q <= m_axi_arid;
                     araddr_q <= m_axi_araddr;
                 end
-                else if (m_axi_awvalid && m_axi_awready)begin
+                else begin
+                    if (m_axi_awvalid && m_axi_awready)begin
                     awid_q <= m_axi_awid;
                     awaddr_q <= m_axi_awaddr;
                     aw_done <= 1'b1;
-                end
-                else if (m_axi_wvalid && m_axi_wready) begin
+                    end
+                    if (m_axi_wvalid && m_axi_wready) begin
                     wstrb_q <= m_axi_wstrb;
                     wdata_q <= m_axi_wdata;
                     w_done <= 1'b1;
-                end
-                else begin
-                    w_done <= 1'b0;
-                    aw_done <= 1'b0;
-                    wstrb_q <='d0;
-                    wdata_q <= 'd0;
-                    awid_q <= 'd0;
-                    awaddr_q <= 'd0;
-                    arid_q <= 'd0;
-                    araddr_q <= 'd0;
+                    end
                 end
             end
+
+            //锁存完了，可以清零
+            WAIT_W: begin
+                if (mmio_req_valid && mmio_req_ready) begin
+                    aw_done <= 1'b0;
+                    w_done  <= 1'b0;
+                end
+            end
+
         endcase
 
     end
