@@ -44,8 +44,27 @@ DMA 当前寄存器：
 | `0x4000_4010` | DMA status |
 | `0x4000_4014` | DMA IRQ clear |
 | `0x4000_4018` | DMA write length |
+| `0x4000_401C` | DMA IRQ status |
+| `0x4000_4020` | DMA IRQ enable |
 
 地址宏以 [`define.sv`](define.sv) 为准。
+
+### DMA CONTROL 软件约束
+
+当前 `DMA_CONTROL_ADDR` 不支持读改写（Read-Modify-Write，RMW）。`CONTROL[0]` 是 `START` 位，写入 `1` 会产生一次启动请求；该位当前会保存在寄存器中，因此软件读回旧值并原样写回，可能意外再次启动 DMA。
+
+软件必须直接写入完整的目标值，不得使用 `|=`、`&=` 等读改写操作。例如：
+
+```c
+/* 错误：读回的 START 位可能仍为 1，重新写入会再次启动 DMA。 */
+MMIO32(DMA_CONTROL_ADDR) |= DMA_CONTROL_IRQ_EN;
+
+/* 正确：显式写入完整控制值。 */
+MMIO32(DMA_CONTROL_ADDR) = DMA_CONTROL_IRQ_EN;
+MMIO32(DMA_CONTROL_ADDR) = DMA_CONTROL_START | DMA_CONTROL_IRQ_EN;
+```
+
+如果以后将 `START` 改成只写脉冲位或硬件自清零位，可再解除这一软件限制。
 
 ## 目录说明
 
@@ -108,4 +127,3 @@ vivado -mode batch -source build_5pipeline_p5b.tcl
 ## License
 
 本项目新增的开放硬件设计源文件采用 `CERN-OHL-S-2.0`。第三方模块保留各自文件中的原始版权和许可证声明，详见 [`LICENSE`](LICENSE) 以及对应源文件头部。
-

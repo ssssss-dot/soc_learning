@@ -83,6 +83,9 @@ localparam DONE_W      = 3'd5;//传输完成后native侧给响应
 localparam WAIT_AR     = 3'd2;//与native侧握手，传地址
 localparam SEND_R      = 3'd3;//返回读数据
 localparam SEND_B      = 3'd4;//返回写成功响应
+localparam ACCEPT_R    = 3'd6;//选择读状态（拉高arready）
+localparam ACCEPT_W    = 3'd7;//选择写状态（拉高awready和wready）
+
 
 reg [2:0] state;
 reg [2:0] next_state;
@@ -112,31 +115,14 @@ assign m_axi_rlast = 1'b1;
 // 不使用USER
 assign m_axi_ruser = 1'b0;
 
-//读优先
-wire select_read;
-
-assign select_read =
-    (state == IDLE) &&
-    !aw_done &&
-    !w_done &&
-    m_axi_arvalid;
 
 // 没有已接收一半的写请求时，才允许接收读请求
-assign m_axi_arready =
-    (state == IDLE) &&
-    !aw_done &&
-    !w_done;
+assign m_axi_arready = (state == ACCEPT_R);
  
 // 本周期选择读请求时，禁止AW/W握手 
-assign m_axi_awready =  
-    (state == IDLE) &&  
-    !aw_done && 
-    !select_read;   
+assign m_axi_awready = (state == ACCEPT_W) &&  !aw_done;   
 
-assign m_axi_wready =
-    (state == IDLE) &&
-    !w_done &&
-    !select_read;
+assign m_axi_wready = (state == ACCEPT_W) && !w_done;
     
 assign m_axi_bvalid = (state == SEND_B);
 assign mmio_req_valid = (state == WAIT_W) || (state == WAIT_AR);
@@ -168,10 +154,22 @@ always @(*) begin
     case(state)
 
         IDLE: begin
-            if(m_axi_arvalid && m_axi_arready) begin
+            if(m_axi_arvalid) begin
+                next_state = ACCEPT_R;
+            end
+            else if (m_axi_wvalid || m_axi_awvalid) begin
+                next_state = ACCEPT_W;
+            end
+        end
+
+        ACCEPT_R:begin
+            if(m_axi_arvalid && m_axi_arready)begin
                 next_state = WAIT_AR;
             end
-            else if (((m_axi_awvalid && m_axi_awready) || aw_done) && (w_done || (m_axi_wvalid && m_axi_wready))) begin
+        end
+
+        ACCEPT_W:begin
+            if(((m_axi_awvalid && m_axi_awready) || aw_done) && ((m_axi_wvalid && m_axi_wready) || w_done))begin
                 next_state = WAIT_W;
             end
         end
@@ -225,23 +223,22 @@ always @(posedge aclk or negedge arst_n) begin
     end
     else begin 
         case(state) 
-
-            IDLE: begin 
+            ACCEPT_R: begin 
                 if(m_axi_arvalid && m_axi_arready) begin
                     arid_q <= m_axi_arid;
                     araddr_q <= m_axi_araddr;
                 end
-                else begin
-                    if (m_axi_awvalid && m_axi_awready)begin
+            end
+            ACCEPT_W: begin
+                if (m_axi_awvalid && m_axi_awready)begin
                     awid_q <= m_axi_awid;
                     awaddr_q <= m_axi_awaddr;
                     aw_done <= 1'b1;
-                    end
-                    if (m_axi_wvalid && m_axi_wready) begin
+                end
+                if (m_axi_wvalid && m_axi_wready) begin
                     wstrb_q <= m_axi_wstrb;
                     wdata_q <= m_axi_wdata;
                     w_done <= 1'b1;
-                    end
                 end
             end
 

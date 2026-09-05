@@ -36,6 +36,28 @@ module bridge_top (
     input                       dbg_rsp_ready,
     output                      dbg_rsp_error,
 
+    // CPU MEM stage -> MMIO AXI master bridge.
+    input                       mmio_req_valid,
+    output                      mmio_req_ready,
+    input      [`DataAddrBus]   mmio_req_addr,
+    input      [`DataBus]       mmio_req_wdata,
+    input      [3:0]            mmio_req_wstrb,
+    input                       mmio_req_write,
+    output                      mmio_rsp_valid,
+    input                       mmio_rsp_ready,
+    output     [`DataBus]       mmio_rsp_rdata,
+
+    // AXI MMIO slave bridge -> MMIO router.
+    output                      router_req_valid,
+    input                       router_req_ready,
+    output     [`DataAddrBus]   router_req_addr,
+    output     [`DataBus]       router_req_wdata,
+    output     [3:0]            router_req_wstrb,
+    output                      router_req_write,
+    input                       router_rsp_valid,
+    output                      router_rsp_ready,
+    input      [`DataBus]       router_rsp_rdata,
+
     // Connect to crossbar read slot 0.
     taxi_axi_if.rd_mst          m_axi_rd,
     // Connect to crossbar read/write slot 1.
@@ -44,7 +66,13 @@ module bridge_top (
     // Connect to crossbar write slot 2.
     taxi_axi_if.wr_mst          loader_axi_wr,
     // Connect the CPU UART/MMIO writer to crossbar write slot 3.
-    taxi_axi_if.wr_mst          uart_axi_wr
+    taxi_axi_if.wr_mst          uart_axi_wr,
+    // Connect the CPU generic MMIO bridge to a crossbar input slot.
+    taxi_axi_if.rd_mst          mmio_axi_rd,
+    taxi_axi_if.wr_mst          mmio_axi_wr,
+    // Connect the crossbar MMIO output slot to the native MMIO router.
+    taxi_axi_if.rd_slv          mmio_target_axi_rd,
+    taxi_axi_if.wr_slv          mmio_target_axi_wr
 );
 
 icache_bridge u_icache_bridge (
@@ -223,6 +251,136 @@ uart_bridge u_uart_bridge (
     .m_axi_buser       (uart_axi_wr.buser),
     .m_axi_bvalid      (uart_axi_wr.bvalid),
     .m_axi_bready      (uart_axi_wr.bready)
+);
+
+// Convert CPU native MMIO requests into AXI transactions for the crossbar.
+mmio_bridge u_mmio_bridge (
+    .aclk              (aclk),
+    .arst_n            (arst_n),
+
+    .mmio_req_valid    (mmio_req_valid),
+    .mmio_req_ready    (mmio_req_ready),
+    .mmio_req_addr     (mmio_req_addr),
+    .mmio_req_wdata    (mmio_req_wdata),
+    .mmio_req_wstrb    (mmio_req_wstrb),
+    .mmio_req_write    (mmio_req_write),
+    .mmio_rsp_valid    (mmio_rsp_valid),
+    .mmio_rsp_ready    (mmio_rsp_ready),
+    .mmio_rsp_rdata    (mmio_rsp_rdata),
+
+    .m_axi_wdata       (mmio_axi_wr.wdata),
+    .m_axi_wstrb       (mmio_axi_wr.wstrb),
+    .m_axi_wlast       (mmio_axi_wr.wlast),
+    .m_axi_wuser       (mmio_axi_wr.wuser),
+    .m_axi_wvalid      (mmio_axi_wr.wvalid),
+    .m_axi_wready      (mmio_axi_wr.wready),
+
+    .m_axi_awid        (mmio_axi_wr.awid),
+    .m_axi_awaddr      (mmio_axi_wr.awaddr),
+    .m_axi_awlen       (mmio_axi_wr.awlen),
+    .m_axi_awsize      (mmio_axi_wr.awsize),
+    .m_axi_awburst     (mmio_axi_wr.awburst),
+    .m_axi_awlock      (mmio_axi_wr.awlock),
+    .m_axi_awcache     (mmio_axi_wr.awcache),
+    .m_axi_awprot      (mmio_axi_wr.awprot),
+    .m_axi_awqos       (mmio_axi_wr.awqos),
+    .m_axi_awregion    (mmio_axi_wr.awregion),
+    .m_axi_awuser      (mmio_axi_wr.awuser),
+    .m_axi_awvalid     (mmio_axi_wr.awvalid),
+    .m_axi_awready     (mmio_axi_wr.awready),
+
+    .m_axi_bid         (mmio_axi_wr.bid),
+    .m_axi_bresp       (mmio_axi_wr.bresp),
+    .m_axi_buser       (mmio_axi_wr.buser),
+    .m_axi_bvalid      (mmio_axi_wr.bvalid),
+    .m_axi_bready      (mmio_axi_wr.bready),
+
+    .m_axi_arid        (mmio_axi_rd.arid),
+    .m_axi_araddr      (mmio_axi_rd.araddr),
+    .m_axi_arlen       (mmio_axi_rd.arlen),
+    .m_axi_arsize      (mmio_axi_rd.arsize),
+    .m_axi_arburst     (mmio_axi_rd.arburst),
+    .m_axi_arlock      (mmio_axi_rd.arlock),
+    .m_axi_arcache     (mmio_axi_rd.arcache),
+    .m_axi_arprot      (mmio_axi_rd.arprot),
+    .m_axi_arqos       (mmio_axi_rd.arqos),
+    .m_axi_arregion    (mmio_axi_rd.arregion),
+    .m_axi_aruser      (mmio_axi_rd.aruser),
+    .m_axi_arvalid     (mmio_axi_rd.arvalid),
+    .m_axi_arready     (mmio_axi_rd.arready),
+
+    .m_axi_rid         (mmio_axi_rd.rid),
+    .m_axi_rdata       (mmio_axi_rd.rdata),
+    .m_axi_rresp       (mmio_axi_rd.rresp),
+    .m_axi_rlast       (mmio_axi_rd.rlast),
+    .m_axi_ruser       (mmio_axi_rd.ruser),
+    .m_axi_rvalid      (mmio_axi_rd.rvalid),
+    .m_axi_rready      (mmio_axi_rd.rready)
+);
+
+// Convert the crossbar MMIO AXI target into the native router interface.
+axi2native_mmio u_axi2native_mmio (
+    .aclk              (aclk),
+    .arst_n            (arst_n),
+
+    .mmio_req_valid    (router_req_valid),
+    .mmio_req_ready    (router_req_ready),
+    .mmio_req_addr     (router_req_addr),
+    .mmio_req_wdata    (router_req_wdata),
+    .mmio_req_wstrb    (router_req_wstrb),
+    .mmio_req_write    (router_req_write),
+    .mmio_rsp_valid    (router_rsp_valid),
+    .mmio_rsp_ready    (router_rsp_ready),
+    .mmio_rsp_rdata    (router_rsp_rdata),
+
+    .m_axi_wdata       (mmio_target_axi_wr.wdata),
+    .m_axi_wstrb       (mmio_target_axi_wr.wstrb),
+    .m_axi_wlast       (mmio_target_axi_wr.wlast),
+    .m_axi_wuser       (mmio_target_axi_wr.wuser),
+    .m_axi_wvalid      (mmio_target_axi_wr.wvalid),
+    .m_axi_wready      (mmio_target_axi_wr.wready),
+
+    .m_axi_awid        (mmio_target_axi_wr.awid),
+    .m_axi_awaddr      (mmio_target_axi_wr.awaddr),
+    .m_axi_awlen       (mmio_target_axi_wr.awlen),
+    .m_axi_awsize      (mmio_target_axi_wr.awsize),
+    .m_axi_awburst     (mmio_target_axi_wr.awburst),
+    .m_axi_awlock      (mmio_target_axi_wr.awlock),
+    .m_axi_awcache     (mmio_target_axi_wr.awcache),
+    .m_axi_awprot      (mmio_target_axi_wr.awprot),
+    .m_axi_awqos       (mmio_target_axi_wr.awqos),
+    .m_axi_awregion    (mmio_target_axi_wr.awregion),
+    .m_axi_awuser      (mmio_target_axi_wr.awuser),
+    .m_axi_awvalid     (mmio_target_axi_wr.awvalid),
+    .m_axi_awready     (mmio_target_axi_wr.awready),
+
+    .m_axi_bid         (mmio_target_axi_wr.bid),
+    .m_axi_bresp       (mmio_target_axi_wr.bresp),
+    .m_axi_buser       (mmio_target_axi_wr.buser),
+    .m_axi_bvalid      (mmio_target_axi_wr.bvalid),
+    .m_axi_bready      (mmio_target_axi_wr.bready),
+
+    .m_axi_arid        (mmio_target_axi_rd.arid),
+    .m_axi_araddr      (mmio_target_axi_rd.araddr),
+    .m_axi_arlen       (mmio_target_axi_rd.arlen),
+    .m_axi_arsize      (mmio_target_axi_rd.arsize),
+    .m_axi_arburst     (mmio_target_axi_rd.arburst),
+    .m_axi_arlock      (mmio_target_axi_rd.arlock),
+    .m_axi_arcache     (mmio_target_axi_rd.arcache),
+    .m_axi_arprot      (mmio_target_axi_rd.arprot),
+    .m_axi_arqos       (mmio_target_axi_rd.arqos),
+    .m_axi_arregion    (mmio_target_axi_rd.arregion),
+    .m_axi_aruser      (mmio_target_axi_rd.aruser),
+    .m_axi_arvalid     (mmio_target_axi_rd.arvalid),
+    .m_axi_arready     (mmio_target_axi_rd.arready),
+
+    .m_axi_rid         (mmio_target_axi_rd.rid),
+    .m_axi_rdata       (mmio_target_axi_rd.rdata),
+    .m_axi_rresp       (mmio_target_axi_rd.rresp),
+    .m_axi_rlast       (mmio_target_axi_rd.rlast),
+    .m_axi_ruser       (mmio_target_axi_rd.ruser),
+    .m_axi_rvalid      (mmio_target_axi_rd.rvalid),
+    .m_axi_rready      (mmio_target_axi_rd.rready)
 );
 
 endmodule

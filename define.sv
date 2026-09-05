@@ -237,6 +237,12 @@
 `define DMA_CONTROL_ADDR   32'h4000_400C//决定是否启用中断
 `define DMA_STATUS_ADDR    32'h4000_4010//状态寄存器（只读）
 `define DMA_IRQ_CLEAR_ADDR 32'h4000_4014//清中断
+// IRQ_STATUS[0]：AXI读端完成
+// IRQ_STATUS[1]：AXI写端完成
+// IRQ_STATUS[2]：AXI读端错误
+// IRQ_STATUS[3]：AXI写端错误
+`define DMA_IRQ_STATUS_ADDR 32'h4000_401C//记录中断的原因
+`define DMA_IRQ_ENABLE_ADDR  32'h4000_4020//使能哪个中断，由外部程序配置
 
 //csr中断相关指令和寄存器
 `define CsrAddrBus 11:0
@@ -306,5 +312,10 @@
 //通过读mmio_addr_mask，判断是否是mmio，mmio的地址范围是0x4000_0000-0x4000_FFFF
 `define MMIO_BASE_ADDR  32'h4000_0000
 `define MMIO_ADDR_MASK  32'hFFFF_0000
+
+`define DMA_BASE_ADDR   32'h4000_4000
+`define CONV_BASE_ADDR  32'h4000_5000
+`define POOL_BASE_ADDR  32'h4000_6000
+`define FC_BASE_ADDR    32'h4000_7000
 
 `endif

@@ -9,6 +9,7 @@ module dma_ctrl(
     output dma_req_ready,
     input dma_req_valid,
     output dma_rsp_valid,
+    input dma_rsp_ready,
 
     //dmawe
     input [`DataBus] dma_wdata,
@@ -32,7 +33,7 @@ module dma_ctrl(
     output [15:0]     rd_desc_len,
     output            rd_desc_valid,
     input             rd_desc_ready,
-    input             rd_desc_sts_valid,
+    input             rd_desc_sts_valid,//dma读任务完成
     input  [3:0]      rd_desc_sts_error,
 
     //写 descriptor 接口
@@ -40,7 +41,7 @@ module dma_ctrl(
     output [15:0]     wr_desc_len,
     output            wr_desc_valid,
     input             wr_desc_ready,
-    input             wr_desc_sts_valid,
+    input             wr_desc_sts_valid,//dma写任务完成
     input  [3:0]      wr_desc_sts_error
 );
 
@@ -68,21 +69,40 @@ reg [`DataBus] dma_len_wr;
 //CTRL[1] irq_enable
 reg [`DataBus] dma_ctrl;
 wire [`DataBus] dma_status;
-reg [`DataBus] dma_clear;
+reg [`DataBus] irq_status;
+reg [`DataBus] irq_enable;
+
+//中断原因的掩码
+wire [`DataBus] irq_set_mask;
+assign irq_set_mask = {
+    28'b0,
+    wr_desc_sts_valid &&
+        (wr_desc_sts_error != 4'b0000), // bit3 写错误
+
+    rd_desc_sts_valid &&
+        (rd_desc_sts_error != 4'b0000), // bit2 读错误
+
+    wr_desc_sts_valid,                  // bit1 写完成
+    rd_desc_sts_valid                   // bit0 读完成
+};
 
 reg busy;
 reg done;
 reg error;
-reg irq_pending;
-reg dma_we_d0;
+wire irq_pending;
+reg rd_error_seen;//是用来记住本次DMA任务的读端曾经发生过错误的内部标志
+reg [`DataBus] dma_rdata_q;
 
 //要两个都配置好才能进下一个状态，但不一定同一周期完成，所以加done信号
 reg rd_desc_done;//记录dmactrl读部分的配置传输完毕
 reg wr_desc_done;//记录dmactrl写部分的配置传输完毕
 
-assign dma_rdata = dma_status;
+assign dma_rdata = dma_rdata_q;
 assign dma_status = {28'b0, irq_pending, error, done, busy};
-assign dma_irq    = irq_pending;
+assign dma_irq =
+    dma_ctrl[1] &&
+    (|(irq_status & irq_enable));//考虑中断是否使能，dma_ctrl[1]是全局的中断使能
+assign irq_pending = |irq_status;//每一位取或，只要有一个中断原因挂起就说明有中断
 
 //读写配置有效信号，完成信号记录好了就拉低valid，防止重复赋值
 assign rd_desc_valid = (state_d == REQ_D) && !rd_desc_done;
@@ -95,7 +115,7 @@ assign rd_desc_len      = dma_len_rd[15:0];
 assign wr_desc_len      = dma_len_wr[15:0];
 
 assign dma_req_ready = (state_m == IDLE_M);
-assign dma_rsp_valid = (state_m == WAIT_M) && !dma_we_d0;
+assign dma_rsp_valid = (state_m == WAIT_M);
 
 //start信号是单个脉冲，不能看dmactrl的最低位（最低位会拉高多个周期）
 wire start_pulse;
@@ -105,17 +125,33 @@ assign start_pulse = (state_m == IDLE_M) &&
                      dma_we &&
                      dma_wstrb == 4'b1111 &&
                      dma_addr == `DMA_CONTROL_ADDR &&
-                     dma_wdata[0];
+                     dma_wdata[0] &&
+                     !busy;
 
-//用来判断dma中断信号是否要清楚的脉冲信号，通过dma_clear寄存器控制
-wire irq_clear_pulse;
-assign irq_clear_pulse = (state_m == IDLE_M) &&
+//中断清除，直接在写时候清除，不用寄存器
+wire irq_clear_write;//判断是不是写clear，如果是说明可能要清除
+assign irq_clear_write = (state_m == IDLE_M) &&
                          dma_req_valid &&
                          dma_req_ready &&
                          dma_we &&
                          dma_wstrb == 4'b1111 &&
-                         dma_addr == `DMA_IRQ_CLEAR_ADDR &&
-                         dma_wdata[0];
+                         dma_addr == `DMA_IRQ_CLEAR_ADDR;
+//irq_clear_mask[0]：清除读完成状态
+//irq_clear_mask[1]：清除写完成状态
+//irq_clear_mask[2]：清除读错误状态
+//irq_clear_mask[3]：清除写错误状态
+wire [`DataBus] irq_clear_mask;
+assign irq_clear_mask = irq_clear_write ? {28'b0, dma_wdata[3:0]} : 32'b0;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        irq_status <= 32'b0;
+    end else begin
+        irq_status <=
+            (irq_status & ~irq_clear_mask) |
+            irq_set_mask;
+    end
+end
 
 always @(posedge clk or negedge rst_n)begin
     if(!rst_n)begin
@@ -154,6 +190,9 @@ always @(*) begin
                 next_state_d = IDLE_D;
             end
         end
+        default: begin
+            next_state_d = IDLE_D;
+        end
     endcase
 end
 
@@ -166,19 +205,17 @@ always @(*) begin
             end
         end
         REQ_M:begin
-            if(!dma_we_d0)begin
-                next_state_m = WAIT_M;
-            end
-            else if(dma_we_d0)begin
-                next_state_m = DONE_M;
-            end
+            next_state_m = WAIT_M;
         end
         WAIT_M:begin
-            if(dma_rsp_valid)begin
+            if(dma_rsp_valid && dma_rsp_ready)begin
                 next_state_m = DONE_M;
             end
         end
         DONE_M:begin
+            next_state_m = IDLE_M;
+        end
+        default: begin
             next_state_m = IDLE_M;
         end
     endcase
@@ -189,16 +226,12 @@ always@(posedge clk or negedge rst_n)begin
         busy <= 'd0;
         done <= 'd0;
         error <= 'd0;
-        irq_pending <= 'd0;
+        rd_error_seen <= 1'b0;
 
         wr_desc_done <= 'd0;
         rd_desc_done <= 'd0;
     end
     else begin
-        //先判断中断信号是不是要清零
-        if(irq_clear_pulse) begin
-            irq_pending <= 1'b0;
-        end
         case(state_d)
             //开始时更新状态寄存器
             IDLE_D:begin
@@ -206,11 +239,13 @@ always@(posedge clk or negedge rst_n)begin
                     busy <= 1'b1;
                     done <= 'd0;
                     error <= 'd0;
-                    irq_pending <= 'd0;
+                    rd_error_seen <= 1'b0;
 
                     rd_desc_done <= 'd0;
                     wr_desc_done <= 'd0;
                 end
+                else if (busy && rd_desc_sts_valid && |rd_desc_sts_error)
+                    rd_error_seen <= 1'b1;
             end
 
             //req阶段对done信号的生成
@@ -226,14 +261,16 @@ always@(posedge clk or negedge rst_n)begin
 
             //结束时更新状态寄存器并拉高中断信号
             BACK_D: begin
-                if(wr_desc_sts_valid) begin
+                if (wr_desc_sts_valid) begin
                     busy <= 1'b0;
-                    done <= (wr_desc_sts_error == 4'b0000);
-                    error <= (wr_desc_sts_error != 4'b0000);
 
-                    if(dma_ctrl[1]) begin//dma_ctrl[1]是en使能位
-                        irq_pending <= 1'b1;
-                    end
+                    error <= rd_error_seen ||
+                            irq_set_mask[2] ||
+                            irq_set_mask[3];
+
+                    done <= !(rd_error_seen ||
+                            irq_set_mask[2] ||
+                            irq_set_mask[3]);
                 end
             end
         endcase
@@ -242,22 +279,19 @@ end
 
 always @(posedge clk or negedge rst_n)begin
     if(!rst_n)begin
-        dma_clear <= 'd0;
         dma_src <= 'd0;
         dma_len_rd <= 'd0;
         dma_len_wr <= 'd0;
         dma_dst <= 'd0;
         dma_ctrl <= 'd0;
-
-        dma_we_d0 <= 'd0;
+        irq_enable <= 'd0;
+        dma_rdata_q <= 'd0;
 
     end
     else begin
         case (state_m)
             IDLE_M:begin
                 if(dma_req_ready && dma_req_valid)begin
-                    dma_we_d0 <= dma_we;
-
                     if (dma_we && dma_wstrb == 4'b1111) begin
                         case(dma_addr)
                             `DMA_SRC_BASE: begin
@@ -275,9 +309,39 @@ always @(posedge clk or negedge rst_n)begin
                             `DMA_CONTROL_ADDR: begin
                                 dma_ctrl <= dma_wdata;
                             end
-                            `DMA_IRQ_CLEAR_ADDR: begin
-                                dma_clear <= dma_wdata;
+                            `DMA_IRQ_ENABLE_ADDR:begin
+                                irq_enable <= dma_wdata;
                             end
+                        endcase
+                    end
+                    else if(!dma_we)begin
+                        case (dma_addr)
+                            `DMA_SRC_BASE:
+                                dma_rdata_q <= dma_src;
+
+                            `DMA_DST_BASE:
+                                dma_rdata_q <= dma_dst;
+
+                            `DMA_RDLEN_BASE:
+                                dma_rdata_q <= dma_len_rd;
+
+                            `DMA_WRLEN_BASE:
+                                dma_rdata_q <= dma_len_wr;
+
+                            `DMA_CONTROL_ADDR:
+                                dma_rdata_q <= dma_ctrl;
+
+                            `DMA_STATUS_ADDR:
+                                dma_rdata_q <= dma_status;
+
+                            `DMA_IRQ_STATUS_ADDR:
+                                dma_rdata_q <= irq_status;
+
+                            `DMA_IRQ_ENABLE_ADDR:
+                                dma_rdata_q <= irq_enable;
+
+                            default:
+                                dma_rdata_q <= 32'b0;
                         endcase
                     end
                 end
