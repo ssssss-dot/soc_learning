@@ -18,11 +18,14 @@ module dma_ctrl(
     input dma_we,  
 
     //读status
-    //status[0] : busy        DMA正在工作
-    //status[1] : done        DMA本次传输完成
-    //status[2] : error       DMA传输出错
-    //status[3] : irq_pending DMA中断挂起
-    //status[31:4] : 保留
+    //status[0] : rd_busy     读DMA正在工作
+    //status[1] : wr_busy     写DMA正在工作
+    //status[2] : rd_done     读DMA完成
+    //status[3] : wr_done     写DMA完成
+    //status[4] : rd_error    读DMA出错
+    //status[5] : wr_error    写DMA出错
+    //status[6] : irq_pending 至少有一个中断原因挂起
+    //status[31:7] : 保留
     output  [`DataBus] dma_rdata,
 
     //dma中断产生信号
@@ -52,24 +55,39 @@ localparam REQ_M  = 2'd1;//握手
 localparam WAIT_M = 2'd2;//返回rspvalid（读）
 localparam DONE_M = 2'd3;
 
-localparam IDLE_D = 2'd0;//等 CPU 写 DMA_CONTROL_ADDR 产生 start_pulse
-localparam REQ_D  = 2'd1;//把寄存器里面的给dma并拉高valid，等待握手
-localparam BACK_D = 2'd2;//看写端的stsvalid（说明写完ddr，可以发起中断）
+localparam RD_IDLE = 2'd0;//等 CPU 写 DMA_CONTROL_ADDR 产生 start_pulse
+localparam RD_REQ  = 2'd1;//把寄存器里面的给dma并拉高valid，等待握手
+localparam RD_BACK = 2'd2;//等待读端sts_valid，表示DDR读取任务结束
+
+localparam WR_IDLE = 2'd0;//等 CPU 写 DMA_CONTROL_ADDR 产生 start_pulse
+localparam WR_REQ  = 2'd1;//把寄存器里面的给dma并拉高valid，等待握手
+localparam WR_BACK = 2'd2;//等待写端sts_valid，表示DDR写回任务结束
 
 reg [1:0] state_m;
 reg [1:0] next_state_m;
 
-reg [1:0] state_d;
-reg [1:0] next_state_d;
+reg [1:0] state_rd;
+reg [1:0] next_state_rd;
+
+reg [1:0] state_wr;
+reg [1:0] next_state_wr;
 
 //src和dst都要是ddr的物理地址
 reg [`DataBus] dma_src;//从哪里开始读ddr
 reg [`DataBus] dma_dst;//从哪里开始写ddr
 reg [`DataBus] dma_len_rd;
 reg [`DataBus] dma_len_wr;
-//CTRL[0] start
+//CTRL[0] start_rd
 //CTRL[1] irq_enable
+//CTRL[2] start_wr
 reg [`DataBus] dma_ctrl;
+//STATUS[0] = rd_busy
+//STATUS[1] = wr_busy
+//STATUS[2] = rd_done
+//STATUS[3] = wr_done
+//STATUS[4] = rd_error
+//STATUS[5] = wr_error
+//STATUS[6] = irq_pending
 wire [`DataBus] dma_status;
 reg [`DataBus] irq_status;
 reg [`DataBus] irq_enable;
@@ -89,27 +107,34 @@ assign irq_set_mask = {
 };
 
 assign dma_wr_done_pulse = wr_desc_sts_valid;
-reg busy;
-reg done;
-reg error;
+reg rd_busy;
+reg wr_busy;
+reg rd_done;
+reg wr_done;
+reg rd_error;
+reg wr_error;
 wire irq_pending;
-reg rd_error_seen;//是用来记住本次DMA任务的读端曾经发生过错误的内部标志
 reg [`DataBus] dma_rdata_q;
 
-//要两个都配置好才能进下一个状态，但不一定同一周期完成，所以加done信号
-reg rd_desc_done;//记录dmactrl读部分的配置传输完毕
-reg wr_desc_done;//记录dmactrl写部分的配置传输完毕
-
 assign dma_rdata = dma_rdata_q;
-assign dma_status = {28'b0, irq_pending, error, done, busy};
+assign dma_status = {
+    25'b0,
+    irq_pending,
+    wr_error,
+    rd_error,
+    wr_done,
+    rd_done,
+    wr_busy,
+    rd_busy
+};
 assign dma_irq =
     dma_ctrl[1] &&
     (|(irq_status & irq_enable));//考虑中断是否使能，dma_ctrl[1]是全局的中断使能
 assign irq_pending = |irq_status;//每一位取或，只要有一个中断原因挂起就说明有中断
 
 //读写配置有效信号，完成信号记录好了就拉低valid，防止重复赋值
-assign rd_desc_valid = (state_d == REQ_D) && !rd_desc_done;
-assign wr_desc_valid = (state_d == REQ_D) && !wr_desc_done;
+assign rd_desc_valid = (state_rd == RD_REQ);
+assign wr_desc_valid = (state_wr == WR_REQ);
 
 //在valid期间，相关配置接口要一直拉高
 assign rd_desc_src_addr = dma_src;
@@ -121,15 +146,27 @@ assign dma_req_ready = (state_m == IDLE_M);
 assign dma_rsp_valid = (state_m == WAIT_M);
 
 //start信号是单个脉冲，不能看dmactrl的最低位（最低位会拉高多个周期）
-wire start_pulse;
-assign start_pulse = (state_m == IDLE_M) &&
+//读开始信号
+wire start_pulse_rd;
+assign start_pulse_rd = (state_m == IDLE_M) &&
                      dma_req_valid &&
                      dma_req_ready &&
                      dma_we &&
                      dma_wstrb == 4'b1111 &&
                      dma_addr == `DMA_CONTROL_ADDR &&
                      dma_wdata[0] &&
-                     !busy;
+                     !rd_busy;
+
+//写开始信号
+wire start_pulse_wr;
+assign start_pulse_wr = (state_m == IDLE_M) &&
+                     dma_req_valid &&
+                     dma_req_ready &&
+                     dma_we &&
+                     dma_wstrb == 4'b1111 &&
+                     dma_addr == `DMA_CONTROL_ADDR &&
+                     dma_wdata[2] &&
+                     !wr_busy;
 
 //中断清除，直接在写时候清除，不用寄存器
 wire irq_clear_write;//判断是不是写clear，如果是说明可能要清除
@@ -145,7 +182,7 @@ assign irq_clear_write = (state_m == IDLE_M) &&
 //irq_clear_mask[3]：清除写错误状态
 wire [`DataBus] irq_clear_mask;
 assign irq_clear_mask = irq_clear_write ? {28'b0, dma_wdata[3:0]} : 32'b0;
-
+//中断原因寄存器更新
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         irq_status <= 32'b0;
@@ -168,33 +205,59 @@ end
 
 always @(posedge clk or negedge rst_n)begin
     if(!rst_n)begin
-        state_d <= IDLE_D;
+        state_rd <= RD_IDLE;
+        state_wr <= WR_IDLE;
     end
     else begin
-        state_d <= next_state_d;
+        state_rd <= next_state_rd;
+        state_wr <= next_state_wr;
     end
 end
 
 always @(*) begin
-    next_state_d = state_d;
-    case (state_d)
-        IDLE_D:begin
-            if(start_pulse)begin
-                next_state_d = REQ_D;
+    next_state_wr = state_wr;
+    case (state_wr)
+        WR_IDLE:begin
+            if(start_pulse_wr)begin
+                next_state_wr = WR_REQ;
             end
         end
-        REQ_D:begin
-            if((wr_desc_done || (wr_desc_valid && wr_desc_ready)) && (rd_desc_done || (rd_desc_valid && rd_desc_ready)))begin
-                next_state_d = BACK_D;
+        WR_REQ:begin
+            if(wr_desc_valid && wr_desc_ready) begin
+                next_state_wr = WR_BACK;
             end
         end
-        BACK_D:begin
-            if(wr_desc_sts_valid)begin//响应握手成功表示写完ddr
-                next_state_d = IDLE_D;
+        WR_BACK:begin
+            if(wr_desc_sts_valid)begin//写DMA返回任务状态
+                next_state_wr = WR_IDLE;
             end
         end
         default: begin
-            next_state_d = IDLE_D;
+            next_state_wr = WR_IDLE;
+        end
+    endcase
+end
+
+always @(*) begin
+    next_state_rd = state_rd;
+    case (state_rd)
+        RD_IDLE:begin
+            if(start_pulse_rd)begin
+                next_state_rd = RD_REQ;
+            end
+        end
+        RD_REQ:begin
+            if(rd_desc_valid && rd_desc_ready) begin
+                next_state_rd = RD_BACK;
+            end
+        end
+        RD_BACK:begin
+            if(rd_desc_sts_valid)begin//读DMA返回任务状态
+                next_state_rd = RD_IDLE;
+            end
+        end
+        default: begin
+            next_state_rd = RD_IDLE;
         end
     endcase
 end
@@ -224,62 +287,47 @@ always @(*) begin
     endcase
 end
 
-always@(posedge clk or negedge rst_n)begin
-    if(!rst_n)begin
-        busy <= 'd0;
-        done <= 'd0;
-        error <= 'd0;
-        rd_error_seen <= 1'b0;
-
-        wr_desc_done <= 'd0;
-        rd_desc_done <= 'd0;
+//dma读侧更新
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        rd_busy  <= 1'b0;
+        rd_done  <= 1'b0;
+        rd_error <= 1'b0;
     end
     else begin
-        if(start_pulse)begin
-            rd_error_seen <= 1'b0;
+        if (start_pulse_rd) begin
+            rd_busy  <= 1'b1;
+            rd_done  <= 1'b0;
+            rd_error <= 1'b0;
         end
-        else if (busy && rd_desc_sts_valid && |rd_desc_sts_error)begin
-            rd_error_seen <= 1'b1;
+
+        if (rd_desc_sts_valid) begin
+            rd_busy  <= 1'b0;
+            rd_done  <= (rd_desc_sts_error == 4'b0000);
+            rd_error <= (rd_desc_sts_error != 4'b0000);
         end
-        case(state_d)
-            //开始时更新状态寄存器
-            IDLE_D:begin
-                if(start_pulse)begin
-                    busy <= 1'b1;
-                    done <= 'd0;
-                    error <= 'd0;
+    end
+end
 
-                    rd_desc_done <= 'd0;
-                    wr_desc_done <= 'd0;
-                end
-            end
+//dma写侧更新
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        wr_busy  <= 1'b0;
+        wr_done  <= 1'b0;
+        wr_error <= 1'b0;
+    end
+    else begin
+        if (start_pulse_wr) begin
+            wr_busy  <= 1'b1;
+            wr_done  <= 1'b0;
+            wr_error <= 1'b0;
+        end
 
-            //req阶段对done信号的生成
-            REQ_D:begin
-                if(rd_desc_valid && rd_desc_ready) begin
-                    rd_desc_done <= 1'b1;
-                end
-
-                if(wr_desc_valid && wr_desc_ready) begin
-                    wr_desc_done <= 1'b1;
-                end
-            end
-
-            //结束时更新状态寄存器并拉高中断信号
-            BACK_D: begin
-                if (wr_desc_sts_valid) begin
-                    busy <= 1'b0;
-
-                    error <= rd_error_seen ||
-                            irq_set_mask[2] ||
-                            irq_set_mask[3];
-
-                    done <= !(rd_error_seen ||
-                            irq_set_mask[2] ||
-                            irq_set_mask[3]);
-                end
-            end
-        endcase
+        if (wr_desc_sts_valid) begin
+            wr_busy  <= 1'b0;
+            wr_done  <= (wr_desc_sts_error == 4'b0000);
+            wr_error <= (wr_desc_sts_error != 4'b0000);
+        end
     end
 end
 
