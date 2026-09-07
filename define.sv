@@ -318,4 +318,7 @@
 `define POOL_BASE_ADDR  32'h4000_6000
 `define FC_BASE_ADDR    32'h4000_7000
 
+//加速器共享128KB的ram
+`define RAM_SIZE 0:32767
+
 `endif
