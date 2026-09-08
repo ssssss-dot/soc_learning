@@ -392,6 +392,9 @@ wire dma_we;
 wire [`DataBus] dma_rdata;
 wire dma_irq;//dma中断拉高信号
 wire dma_wr_done_pulse;//只给DCache失效使用，不受CPU/DMA中断屏蔽影响
+// 加速器尚未接入；BRAM回环测试阶段由DMA独占共享BRAM。
+wire acc_bram_blocked;
+assign acc_bram_blocked = 1'b0;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -1451,6 +1454,8 @@ assign m_axi[0].ruser = '0;
 dma_subsystem_top u_dma_subsystem_top(
     .clk(clk),
     .rst_n(cpu_rst_n),
+
+    .acc_bram_blocked(acc_bram_blocked),
 
     // MMIO router <-> DMA ctrl
     .dma_req_ready(dma_req_ready),

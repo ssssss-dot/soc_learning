@@ -4,6 +4,9 @@ module dma_subsystem_top(
     input clk,
     input rst_n,
 
+    // High while the accelerator owns the shared BRAM.
+    input                     acc_bram_blocked,
+
     // MMIO router <-> DMA ctrl native request/response
     output                    dma_req_ready,
     input                     dma_req_valid,
@@ -54,7 +57,7 @@ taxi_dma_desc_if #(
     .TAG_W(8)
 ) wr_desc_if();
 
-// AXIS stream: DMA read -> add -> DMA write
+// AXIS streams on both sides of the shared accelerator BRAM.
 taxi_axis_if #(
     .DATA_W(32),
     .KEEP_W(4),
@@ -114,7 +117,7 @@ assign ctrl_wr_desc_ready       = wr_desc_if.req_ready;
 assign ctrl_wr_desc_sts_valid   = wr_desc_if.sts_valid;
 assign ctrl_wr_desc_sts_error   = wr_desc_if.sts_error;
 
-// Unused AXIS sideband signals for the simple add.sv datapath
+// Unused AXIS sideband signals for the BRAM datapath
 assign wr_axis_if.tstrb = wr_axis_if.tkeep;
 assign wr_axis_if.tid   = '0;
 assign wr_axis_if.tdest = '0;
@@ -176,7 +179,7 @@ taxi_axi_dma #(
     .write_abort(1'b0)
 );
 
-add add_inst(
+bram_for_acc bram_for_acc_inst(
     .clk(clk),
     .rst_n(rst_n),
 
@@ -190,7 +193,13 @@ add add_inst(
     .last_o(wr_axis_if.tlast),
     .valid_o(wr_axis_if.tvalid),
     .ready_o(wr_axis_if.tready),
-    .keep_o(wr_axis_if.tkeep)
+    .keep_o(wr_axis_if.tkeep),
+
+    .ram2ddr_len(ctrl_wr_desc_len),
+    .ctrl_wr_desc_valid(ctrl_wr_desc_valid),
+    .ctrl_wr_desc_ready(ctrl_wr_desc_ready),
+
+    .write_blocked(acc_bram_blocked)
 );
 
 endmodule

@@ -139,7 +139,7 @@ set rtl_files [list \
     "axi/axi_crossbar/wr/taxi_axi_register_wr.sv" \
     "axi/axi_crossbar/wr/taxi_axi_crossbar_wr.sv" \
     "axi/axi_crossbar/taxi_axi_crossbar_3s.sv" \
-    "coprocessor/add.sv" \
+    "coprocessor/bram_for_acc.sv" \
     "dma/dma_ctrl.sv" \
     "dma/taxi_axi_dma_rd.sv" \
     "dma/taxi_axi_dma_wr.sv" \

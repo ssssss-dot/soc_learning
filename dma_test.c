@@ -1,21 +1,12 @@
 /*
- * DMA + AXIS +1 协处理器测试程序
+ * DMA + shared BRAM store-and-forward board test.
  *
- * 数据流：
- *   1. dma_src[]位于.data段，生成DRAM镜像后由Loader在CPU启动前写入DDR；
- *   2. CPU通过MMIO配置DMA_SRC/DST/LEN/CONTROL；
- *   3. DMA从DDR读取dma_src[]，数据经过AXIS +1协处理器后写入dma_dst[]；
- *   4. CPU先启动写DMA，让它在AXIS输入端等待数据；
- *   5. CPU预热目标DCache后再启动读DMA，形成DDR -> +1 -> DDR数据流；
- *   6. CPU在中断打印前保存读回快照，再处理读/写两次完成中断。
+ * Data path:
+ *   DDR source -> DMA read channel -> bram_for_acc
+ *   bram_for_acc -> DMA write channel -> DDR destination
  *
- * 约束：
- *   - 链接脚本必须把.data/.bss放在CPU地址0x8000_0000开始的区域；
- *   - DMA描述符使用DDR物理地址，当前映射基址为0x1000_0000；
- *   - SRC、DST必须4字节对齐，LEN必须是4的整数倍且不能为0；
- *   - DMA完成后需要让DCache失效，或者保证CPU在DMA前从未读取dma_dst[]。
- *   - 两类事件共用一根IRQ，采用先读后写的中断使能，避免合并成一次通知；
- *   - 搬运和快照期间屏蔽IRQ；快照后再开放两次通知，验证失效不依赖IRQ。
+ * The read transfer fills BRAM first.  Its completion interrupt starts the
+ * write transfer, which drains BRAM into the destination.
  */
 
 #include <stdint.h>
@@ -23,70 +14,53 @@
 #define USED       __attribute__((used))
 #define NOINLINE   __attribute__((noinline))
 
-/* CPU访问DDR时使用的地址，以及DMA在AXI总线上使用的物理地址。 */
-#define CPU_DDR_BASE       0x80000000u
-#define DDR_PHYS_BASE      0x10000000u
+#define CPU_DDR_BASE        0x80000000u
+#define DDR_PHYS_BASE       0x10000000u
 
-/* UART和DMA控制寄存器的CPU MMIO地址。 */
-#define UART_TX_ADDR       0x40000000u
-#define DMA_SRC_ADDR       0x40004000u
-#define DMA_DST_ADDR       0x40004004u
-/* 修改：将原来的单一 DMA_LEN 寄存器拆分为读长度和写长度寄存器。 */
-#define DMA_RDLEN_ADDR     0x40004008u
-#define DMA_WRLEN_ADDR     0x40004018u
-#define DMA_CONTROL_ADDR   0x4000400Cu
-#define DMA_STATUS_ADDR    0x40004010u
-#define DMA_IRQ_CLEAR_ADDR 0x40004014u
+#define UART_TX_ADDR        0x40000000u
+#define DMA_SRC_ADDR        0x40004000u
+#define DMA_DST_ADDR        0x40004004u
+#define DMA_RDLEN_ADDR      0x40004008u
+#define DMA_CONTROL_ADDR    0x4000400Cu
+#define DMA_STATUS_ADDR     0x40004010u
+#define DMA_IRQ_CLEAR_ADDR  0x40004014u
+#define DMA_WRLEN_ADDR      0x40004018u
 #define DMA_IRQ_STATUS_ADDR 0x4000401Cu
 #define DMA_IRQ_ENABLE_ADDR 0x40004020u
 
-/*
- * CONTROL寄存器：
- *   bit0写1：只启动读DMA（DDR -> AXIS）
- *   bit1写1：允许DMA向CPU输出中断
- *   bit2写1：只启动写DMA（AXIS -> DDR）
- * 注意：每次写CONTROL都会覆盖bit1，所以需要中断时必须把IRQ_EN一起写1。
- */
 #define DMA_CONTROL_RD_START (1u << 0)
 #define DMA_CONTROL_IRQ_EN   (1u << 1)
 #define DMA_CONTROL_WR_START (1u << 2)
 
-/* 新版dma_ctrl的STATUS位定义，读通道和写通道各自有busy/done/error。 */
-#define DMA_STATUS_RD_BUSY   (1u << 0)
-#define DMA_STATUS_WR_BUSY   (1u << 1)
-#define DMA_STATUS_RD_DONE   (1u << 2)
-#define DMA_STATUS_WR_DONE   (1u << 3)
-#define DMA_STATUS_RD_ERROR  (1u << 4)
-#define DMA_STATUS_WR_ERROR  (1u << 5)
-#define DMA_STATUS_IRQ       (1u << 6)
-
-#define DMA_STATUS_BUSY_MASK  (DMA_STATUS_RD_BUSY | DMA_STATUS_WR_BUSY)
-#define DMA_STATUS_DONE_MASK  (DMA_STATUS_RD_DONE | DMA_STATUS_WR_DONE)
+#define DMA_STATUS_RD_DONE    (1u << 2)
+#define DMA_STATUS_WR_DONE    (1u << 3)
+#define DMA_STATUS_RD_ERROR   (1u << 4)
+#define DMA_STATUS_WR_ERROR   (1u << 5)
 #define DMA_STATUS_ERROR_MASK (DMA_STATUS_RD_ERROR | DMA_STATUS_WR_ERROR)
+#define DMA_STATUS_DONE_MASK  (DMA_STATUS_RD_DONE | DMA_STATUS_WR_DONE)
 
-/* 这三个值只是C程序内部的等待结果，不是硬件STATUS位。 */
-#define DMA_SW_WAITING 0u
-#define DMA_SW_DONE    1u
-#define DMA_SW_ERROR   2u
-
-/* IRQ_STATUS/IRQ_ENABLE/IRQ_CLEAR共用位定义，CLEAR为写1清除。 */
-#define DMA_IRQ_READ_DONE  (1u << 0)
-#define DMA_IRQ_WRITE_DONE (1u << 1)
-#define DMA_IRQ_READ_ERROR (1u << 2)
+#define DMA_IRQ_READ_DONE   (1u << 0)
+#define DMA_IRQ_WRITE_DONE  (1u << 1)
+#define DMA_IRQ_READ_ERROR  (1u << 2)
 #define DMA_IRQ_WRITE_ERROR (1u << 3)
-#define DMA_IRQ_ERROR_MASK (DMA_IRQ_READ_ERROR | DMA_IRQ_WRITE_ERROR)
-#define DMA_IRQ_DONE_MASK  (DMA_IRQ_READ_DONE | DMA_IRQ_WRITE_DONE)
-#define DMA_IRQ_ALL_MASK   (DMA_IRQ_DONE_MASK | DMA_IRQ_ERROR_MASK)
+#define DMA_IRQ_DONE_MASK   (DMA_IRQ_READ_DONE | DMA_IRQ_WRITE_DONE)
+#define DMA_IRQ_ERROR_MASK  (DMA_IRQ_READ_ERROR | DMA_IRQ_WRITE_ERROR)
+#define DMA_IRQ_ALL_MASK    (DMA_IRQ_DONE_MASK | DMA_IRQ_ERROR_MASK)
 
-#define MSTATUS_MIE_MASK   (1u << 3)
-#define MIE_MEIE_MASK      (1u << 11)
+#define MSTATUS_MIE_MASK (1u << 3)
+#define MIE_MEIE_MASK    (1u << 11)
 
-#define DMA_WORD_COUNT     16u //dma处理16个字
+#define DMA_WORD_COUNT 16u
+#define DMA_TIMEOUT    1000000u
 
-#define MMIO32(addr) (*(volatile uint32_t *)(uintptr_t)(addr))
+#define DMA_PHASE_IDLE       0u
+#define DMA_PHASE_WAIT_READ  1u
+#define DMA_PHASE_WAIT_WRITE 2u
+#define DMA_PHASE_DONE       3u
+#define DMA_PHASE_ERROR      4u
 
-/* 用于判断CPU是否读到了DCache中的旧数据。 */
 #define DMA_DST_OLD_BASE 0xDEAD0000u
+#define MMIO32(addr) (*(volatile uint32_t *)(uintptr_t)(addr))
 
 static volatile uint32_t dma_src[DMA_WORD_COUNT]
     __attribute__((aligned(4), section(".data.dma_src"))) = {
@@ -99,38 +73,24 @@ static volatile uint32_t dma_src[DMA_WORD_COUNT]
 static volatile uint32_t dma_dst[DMA_WORD_COUNT]
     __attribute__((aligned(128), section(".bss.dma_dst")));
 
-/* 快照在任何中断处理/打印之前生成，后续只检查快照。 */
-static volatile uint32_t dma_dst_snapshot[DMA_WORD_COUNT]
-    __attribute__((aligned(128), section(".bss.dma_snapshot")));
-
-/*
- * dma_irq_done保存软件等待结果；count记录进入中断的次数；
- * seen记录已经看到过的IRQ_STATUS原因。
- * 特殊初值用来保证变量进入.data段，测试开始时再由main清零。
- */
-static volatile uint32_t dma_irq_done
+static volatile uint32_t dma_phase
     __attribute__((section(".data.dma_flag"))) = 0xA5A5A5A5u;
-
 static volatile uint32_t dma_irq_count
     __attribute__((section(".data.dma_flag"))) = 0x5A5A5A5Au;
-
 static volatile uint32_t dma_irq_seen
     __attribute__((section(".data.dma_flag"))) = 0x12345678u;
 
-//屏障前后的内存访问不能随意交换顺序
 static inline void compiler_barrier(void)
 {
     __asm__ volatile ("" ::: "memory");
 }
 
-/* CPU虚拟/内部地址转换成DMA直接访问Crossbar时使用的DDR物理地址。 */
 static uint32_t cpu_addr_to_dma_phys(const volatile void *cpu_ptr)
 {
     uint32_t cpu_addr = (uint32_t)(uintptr_t)cpu_ptr;
     return cpu_addr - CPU_DDR_BASE + DDR_PHYS_BASE;
 }
 
-/* UART从机只需要CPU向固定MMIO地址写入一个字节。 */
 static void uart_putc(char value)
 {
     *(volatile uint8_t *)(uintptr_t)UART_TX_ADDR = (uint8_t)value;
@@ -144,7 +104,6 @@ static void uart_puts(const char *text)
     }
 }
 
-//打印32位十六进制数，一个32位数一共有8个十六进制位，每个十六进制位对应4 bit，从最高的4bit开始一组一组取出
 static void uart_put_hex32(uint32_t value)
 {
     static const char hex_table[] = "0123456789ABCDEF";
@@ -156,7 +115,6 @@ static void uart_put_hex32(uint32_t value)
     }
 }
 
-//这个函数把一个32位无符号整数转换成十进制字符，并通过UART打印
 static void uart_put_dec(uint32_t value)
 {
     static const uint32_t decimal_place[10] = {
@@ -167,18 +125,12 @@ static void uart_put_dec(uint32_t value)
     uint32_t digit;
     uint32_t started = 0u;
 
-    /*
-     * 只使用比较和减法，避免RV32I编译时引入__udivsi3/__umodsi3，
-     * 因而不依赖M扩展或额外的compiler-rt运行库。
-     */
     for (place_index = 0u; place_index < 10u; ++place_index) {
         digit = 0u;
-
         while (value >= decimal_place[place_index]) {
             value -= decimal_place[place_index];
             ++digit;
         }
-
         if ((digit != 0u) || (started != 0u) || (place_index == 9u)) {
             uart_putc((char)('0' + digit));
             started = 1u;
@@ -187,12 +139,8 @@ static void uart_put_dec(uint32_t value)
 }
 
 /*
- * IRQ_STATUS即使对应中断未使能也会记录事件。
- * 本测试在搬运期间关闭中断，读/写完成事件都先保存在sticky位中。
- * 搬运后先只使能读完成，处理并打印后再使能写完成，
- * 因此一根CPU IRQ线也能先后产生两次可见的中断。
- * 只清本次实际处理的原因，不能在第一次中断中把写完成也清掉。
- * interrupt("machine")会让编译器生成必要的现场保护和最后的mret。
+ * READ_DONE starts BRAM -> DDR.  WRITE_DONE means the full round trip ended.
+ * The handler does not print, so UART latency cannot disturb DMA sequencing.
  */
 USED __attribute__((interrupt("machine"), aligned(4), section(".text.trap")))
 void machine_external_irq_handler(void)
@@ -200,54 +148,36 @@ void machine_external_irq_handler(void)
     uint32_t pending = MMIO32(DMA_IRQ_STATUS_ADDR);
     uint32_t enabled = MMIO32(DMA_IRQ_ENABLE_ADDR);
     uint32_t active = pending & enabled & DMA_IRQ_ALL_MASK;
-    uint32_t next_enable = 0u;
-
-    /* 打印期间暂时屏蔽通知，不清除尚未处理的挂起事件。 */
-    MMIO32(DMA_IRQ_ENABLE_ADDR) = 0u;
-    MMIO32(DMA_IRQ_CLEAR_ADDR) = active;
-    compiler_barrier();
 
     dma_irq_count += 1u;
     dma_irq_seen |= active;
 
     if ((active & DMA_IRQ_ERROR_MASK) != 0u) {
-        dma_irq_done = DMA_SW_ERROR;
+        MMIO32(DMA_IRQ_CLEAR_ADDR) = active;
+        MMIO32(DMA_IRQ_ENABLE_ADDR) = 0u;
+        dma_phase = DMA_PHASE_ERROR;
     }
-    else if ((active & DMA_IRQ_WRITE_DONE) != 0u) {
-        /* 写DMA完成才表示处理后的数据已全部写回DDR。 */
-        dma_irq_done = DMA_SW_DONE;
+    else if (((active & DMA_IRQ_READ_DONE) != 0u) &&
+             (dma_phase == DMA_PHASE_WAIT_READ)) {
+        MMIO32(DMA_IRQ_CLEAR_ADDR) = DMA_IRQ_READ_DONE;
+        dma_phase = DMA_PHASE_WAIT_WRITE;
+        compiler_barrier();
+
+        MMIO32(DMA_CONTROL_ADDR) =
+            DMA_CONTROL_IRQ_EN | DMA_CONTROL_WR_START;
     }
-    else if ((active & DMA_IRQ_READ_DONE) != 0u) {
-        /* 读完成不表示DDR结果已经写好，不设置dma_irq_done。 */
-        next_enable = DMA_IRQ_WRITE_DONE | DMA_IRQ_ERROR_MASK;
+    else if (((active & DMA_IRQ_WRITE_DONE) != 0u) &&
+             (dma_phase == DMA_PHASE_WAIT_WRITE)) {
+        MMIO32(DMA_IRQ_CLEAR_ADDR) = DMA_IRQ_WRITE_DONE;
+        MMIO32(DMA_IRQ_ENABLE_ADDR) = 0u;
+        dma_phase = DMA_PHASE_DONE;
     }
     else {
-        /* 异常中断也打印，并结束等待，避免软件无期限空转。 */
-        dma_irq_done = DMA_SW_ERROR;
+        MMIO32(DMA_IRQ_CLEAR_ADDR) = active;
+        MMIO32(DMA_IRQ_ENABLE_ADDR) = 0u;
+        dma_phase = DMA_PHASE_ERROR;
     }
 
-    uart_puts("DMA IRQ #");
-    uart_put_dec(dma_irq_count);
-    uart_puts(": ");
-    if ((active & DMA_IRQ_READ_DONE) != 0u)
-        uart_puts("READ_DONE ");
-    if ((active & DMA_IRQ_WRITE_DONE) != 0u)
-        uart_puts("WRITE_DONE ");
-    if ((active & DMA_IRQ_READ_ERROR) != 0u)
-        uart_puts("READ_ERROR ");
-    if ((active & DMA_IRQ_WRITE_ERROR) != 0u)
-        uart_puts("WRITE_ERROR ");
-    if (active == 0u)
-        uart_puts("UNEXPECTED ");
-    uart_puts("active=");
-    uart_put_hex32(active);
-    uart_puts(", pending=");
-    uart_put_hex32(pending);
-    uart_puts("\r\n");
-
-    /* 正常第一次中断后开放写完成；第二次或错误后保持屏蔽。 */
-    compiler_barrier();
-    MMIO32(DMA_IRQ_ENABLE_ADDR) = next_enable;
     compiler_barrier();
 }
 
@@ -267,117 +197,35 @@ static void enable_dma_external_interrupt(void)
     );
 }
 
-/*
- * 关键区用一个内联汇编块：预热之后不允许编译器插入栈读取、
- * 函数调用或常量表读取，以免无失效时也因为替换缓存而假通过。
- * 当前DCache每行1个字、32组、写穿透且写不分配；
- * 128字节对齐的16个目标字占不同组，快照store不会分配/替换缓存行。
- * 返回0成功，1预热失败，2 DMA错误，3轮询超时。
- * 写DMA已在进入本函数前启动，并正在等待AXIS数据。
- * 本函数先向dma_dst[]写入旧值并读回，故意把旧值装入DCache；
- * 然后只启动读DMA。IRQ全程保持关闭，用于验证写完成脉冲能独立使DCache失效。
- */
-static uint32_t dma_run_coherency_test(uint32_t *status_out)
+static uint32_t prepare_and_warm_destination(void)
 {
-    uint32_t result;
-    uint32_t status;
+    uint32_t index;
 
-    __asm__ volatile (
-        "li %[result], 0\n"
-        "li %[status], 0\n"
-        "mv t0, %[dst]\n"
-        "li t1, %[count]\n"
-        "li t2, %[old]\n"
-        "1:\n"
-        "sw t2, 0(t0)\n"
-        "addi t0, t0, 4\n"
-        "addi t2, t2, 1\n"
-        "addi t1, t1, -1\n"
-        "bnez t1, 1b\n"
-        "mv t0, %[dst]\n"
-        "li t1, %[count]\n"
-        "li t2, %[old]\n"
-        "2:\n"
-        "lw t3, 0(t0)\n"
-        "bne t3, t2, 6f\n"
-        "addi t0, t0, 4\n"
-        "addi t2, t2, 1\n"
-        "addi t1, t1, -1\n"
-        "bnez t1, 2b\n"
-        "li t0, %[control]\n"
-        /* 写DMA已经就绪，这里只写RD_START启动读DMA。 */
-        "li t1, %[rd_start]\n"
-        "sw t1, 0(t0)\n"
-        "li t0, %[status_addr]\n"
-        "li t1, 1000000\n"
-        "li t4, %[irq_status]\n"
-        "3:\n"
-        "lw %[status], 0(t0)\n"
-        "lw t2, 0(t4)\n"
-        "andi t2, t2, %[irq_errors]\n"
-        "bnez t2, 7f\n"
-        /* 两个busy都为0、两个done都为1，才算整条数据流完成。 */
-        "andi t2, %[status], %[completion_mask]\n"
-        "li t3, %[completion_value]\n"
-        "beq t2, t3, 4f\n"
-        "addi t1, t1, -1\n"
-        "bnez t1, 3b\n"
-        "li %[result], 3\n"
-        "j 9f\n"
-        "4:\n"
-        "mv t0, %[dst]\n"
-        "mv t1, %[snapshot]\n"
-        "li t2, %[count]\n"
-        "5:\n"
-        "lw t3, 0(t0)\n"
-        "sw t3, 0(t1)\n"
-        "addi t0, t0, 4\n"
-        "addi t1, t1, 4\n"
-        "addi t2, t2, -1\n"
-        "bnez t2, 5b\n"
-        "j 9f\n"
-        "6: li %[result], 1\n"
-        "j 9f\n"
-        "7: li %[result], 2\n"
-        "9:\n"
-        : [result] "=&r"(result), [status] "=&r"(status)
-        : [dst] "r"(dma_dst), [snapshot] "r"(dma_dst_snapshot),
-          [count] "i"(DMA_WORD_COUNT), [old] "i"(DMA_DST_OLD_BASE),
-          [control] "i"(DMA_CONTROL_ADDR), [rd_start] "i"(DMA_CONTROL_RD_START),
-          [status_addr] "i"(DMA_STATUS_ADDR), [irq_status] "i"(DMA_IRQ_STATUS_ADDR),
-          [irq_errors] "i"(DMA_IRQ_ERROR_MASK),
-          [completion_mask] "i"(DMA_STATUS_BUSY_MASK | DMA_STATUS_DONE_MASK),
-          [completion_value] "i"(DMA_STATUS_DONE_MASK)
-        : "t0", "t1", "t2", "t3", "t4", "memory"
-    );
+    for (index = 0u; index < DMA_WORD_COUNT; ++index) {
+        dma_dst[index] = DMA_DST_OLD_BASE + index;
+    }
+    compiler_barrier();
 
-    *status_out = status;
-    return result;
+    for (index = 0u; index < DMA_WORD_COUNT; ++index) {
+        if (dma_dst[index] != DMA_DST_OLD_BASE + index) {
+            return 1u;
+        }
+    }
+    return 0u;
 }
 
-static void dma_configure_and_arm_writer(void)
+static void configure_dma(void)
 {
-    uint32_t src_phys = cpu_addr_to_dma_phys(dma_src);
-    uint32_t dst_phys = cpu_addr_to_dma_phys(dma_dst);
     uint32_t byte_len = (uint32_t)sizeof(dma_src);
 
-    /* 配置前屏蔽通知并清除全部旧原因；本测试不在BUSY期间修改描述符。 */
+    MMIO32(DMA_CONTROL_ADDR) = 0u;
     MMIO32(DMA_IRQ_ENABLE_ADDR) = 0u;
     MMIO32(DMA_IRQ_CLEAR_ADDR) = DMA_IRQ_ALL_MASK;
-    MMIO32(DMA_SRC_ADDR) = src_phys;
-    MMIO32(DMA_DST_ADDR) = dst_phys;
-    /* 修改：分别配置 DMA 从 DDR 读取和向 DDR 写回的字节数。 */
+
+    MMIO32(DMA_SRC_ADDR) = cpu_addr_to_dma_phys(dma_src);
+    MMIO32(DMA_DST_ADDR) = cpu_addr_to_dma_phys(dma_dst);
     MMIO32(DMA_RDLEN_ADDR) = byte_len;
     MMIO32(DMA_WRLEN_ADDR) = byte_len;
-
-    /*
-     * AXIS是边产生边消费的数据流，它不是一块可以暂存整批数据的RAM。
-     * 因此要先启动写DMA，让它先拉起AXIS ready等待数据；
-     * 之后才能启动读DMA向AXIS发数据，否则读端可能因反压而卡住。
-     * 此时不设IRQ_EN，所以DMA运行期间CPU不会进入中断。
-     */
-    MMIO32(DMA_CONTROL_ADDR) = DMA_CONTROL_WR_START;
-    compiler_barrier();
 }
 
 static uint32_t check_and_print_result(void)
@@ -385,190 +233,124 @@ static uint32_t check_and_print_result(void)
     uint32_t index;
     uint32_t errors = 0u;
 
-    uart_puts("DMA result:\r\n");
-
+    uart_puts("BRAM DMA result:\r\n");
     for (index = 0u; index < DMA_WORD_COUNT; ++index) {
-        /* 使用中断打印之前的快照，不重新读取可能已被替换的目标缓存。 */
-        uint32_t actual = dma_dst_snapshot[index];
-        uint32_t expected = dma_src[index] + 1u;
+        uint32_t actual = dma_dst[index];
+        uint32_t expected = dma_src[index];
 
         uart_putc('[');
         uart_put_dec(index);
-        uart_puts("] ");
+        uart_puts("] actual=");
         uart_put_hex32(actual);
+        uart_puts(" expected=");
+        uart_put_hex32(expected);
 
         if (actual != expected) {
-            uint32_t old_value = DMA_DST_OLD_BASE + index;
-
-            /*
-            * 如果实际值刚好等于DMA启动前写入的旧值，
-            * 基本可以判断CPU命中了没有失效的DCache。
-            */
-            if (actual == old_value) {
-                uart_puts("  DCACHE STALE DATA");
-            }
-            else {
-                uart_puts("  DATA ERROR");
-            }
-
-            uart_puts(", expected=");
-            uart_put_hex32(expected);
+            uart_puts("  ERROR");
             ++errors;
         }
-
         uart_puts("\r\n");
     }
 
     return errors;
 }
 
-/* 在保存好的快照中检查旧值，打印不会改变这份测试证据。 */
-static uint32_t detect_stale_dcache_data(void)
-{
-    uint32_t index;
-    uint32_t stale_count = 0u;
-
-    for (index = 0u; index < DMA_WORD_COUNT; ++index) {
-        uint32_t actual = dma_dst_snapshot[index];
-        uint32_t old_value = DMA_DST_OLD_BASE + index;
-
-        if (actual == old_value) {
-            ++stale_count;
-        }
-    }
-
-    compiler_barrier();
-
-    return stale_count;
-}
 NOINLINE int dma_test_main(void)
 {
+    uint32_t global_mie_mask = MSTATUS_MIE_MASK;
+    uint32_t timeout = DMA_TIMEOUT;
     uint32_t status;
     uint32_t errors;
-    uint32_t test_result;
-    uint32_t irq_timeout = 1000000u;
-    uint32_t global_mie_mask = MSTATUS_MIE_MASK;
-    uint32_t stale_count;
 
     __asm__ volatile ("csrc mstatus, %0" :: "r"(global_mie_mask) : "memory");
-    dma_irq_done = DMA_SW_WAITING;
+
+    uart_puts("DDR -> BRAM -> DDR DMA test start\r\n");
+
+    dma_phase = DMA_PHASE_IDLE;
     dma_irq_count = 0u;
     dma_irq_seen = 0u;
 
-    /* 开放CPU外部中断前，先关闭DMA通知并清除旧挂起位。 */
-    MMIO32(DMA_CONTROL_ADDR) = 0u;
-    MMIO32(DMA_IRQ_ENABLE_ADDR) = 0u;
-    MMIO32(DMA_IRQ_CLEAR_ADDR) = DMA_IRQ_ALL_MASK;
-
-    uart_puts("DMA split-start test start\r\n");
-    uart_puts("Step 1: configure DMA and arm AXIS-to-DDR writer\r\n");
-
-    /* 配置读写描述符，并只启动写DMA。 */
-    dma_configure_and_arm_writer();
-
-    uart_puts("Step 2: warm DCache, start DDR-to-AXIS reader\r\n");
-    uart_puts("Coherency: IRQ masked, snapshot before ISR printing\r\n");
-    test_result = dma_run_coherency_test(&status);
-    if (test_result != 0u) {
-        uart_puts("DMA coherency setup/transfer FAIL, code=");
-        uart_put_dec(test_result);
-        uart_puts(" (1=preload, 2=AXI error, 3=timeout), status=");
-        uart_put_hex32(status);
-        uart_puts("\r\n");
-        return 3;
-    }
-
-    /*
-     * 搬运已完成、快照已保存。只开放通知，不再次START。
-     * sticky状态保留两类完成；ISR先处理读，再开放写，产生两次打印。
-     */
-    MMIO32(DMA_IRQ_ENABLE_ADDR) = DMA_IRQ_READ_DONE | DMA_IRQ_ERROR_MASK;
-    MMIO32(DMA_CONTROL_ADDR) = DMA_CONTROL_IRQ_EN;
-    compiler_barrier();
-    enable_dma_external_interrupt();
-
-    while ((dma_irq_done == DMA_SW_WAITING) && (irq_timeout != 0u)) {
-        --irq_timeout;
-        compiler_barrier();
-    }
-    if (dma_irq_done == DMA_SW_WAITING) {
-        MMIO32(DMA_IRQ_ENABLE_ADDR) = 0u;
-        uart_puts("DMA interrupt timeout\r\n");
-        return 6;
-    }
-
-    status = MMIO32(DMA_STATUS_ADDR);
-    if ((dma_irq_done == DMA_SW_ERROR) ||
-        ((status & DMA_STATUS_ERROR_MASK) != 0u)) {
-        uart_puts("DMA AXI error, status=");
-        uart_put_hex32(status);
-        uart_puts(", irq_seen=");
-        uart_put_hex32(dma_irq_seen);
-        uart_puts("\r\n");
+    if (prepare_and_warm_destination() != 0u) {
+        uart_puts("Destination preload failed\r\n");
         return 1;
     }
 
-    if ((status & DMA_STATUS_DONE_MASK) != DMA_STATUS_DONE_MASK) {
-        uart_puts("DMA completed without both DONE flags, status=");
+    configure_dma();
+    MMIO32(DMA_IRQ_ENABLE_ADDR) = DMA_IRQ_ALL_MASK;
+    dma_phase = DMA_PHASE_WAIT_READ;
+    compiler_barrier();
+    enable_dma_external_interrupt();
+
+    uart_puts("Step 1: DDR -> BRAM\r\n");
+    MMIO32(DMA_CONTROL_ADDR) =
+        DMA_CONTROL_IRQ_EN | DMA_CONTROL_RD_START;
+
+    while ((dma_phase != DMA_PHASE_DONE) &&
+           (dma_phase != DMA_PHASE_ERROR) &&
+           (timeout != 0u)) {
+        --timeout;
+        compiler_barrier();
+    }
+
+    status = MMIO32(DMA_STATUS_ADDR);
+    MMIO32(DMA_IRQ_ENABLE_ADDR) = 0u;
+
+    if (timeout == 0u) {
+        uart_puts("DMA timeout, phase=");
+        uart_put_dec(dma_phase);
+        uart_puts(", status=");
         uart_put_hex32(status);
         uart_puts("\r\n");
         return 2;
     }
 
+    if ((dma_phase == DMA_PHASE_ERROR) ||
+        ((status & DMA_STATUS_ERROR_MASK) != 0u)) {
+        uart_puts("DMA error, irq_status=");
+        uart_put_hex32(MMIO32(DMA_IRQ_STATUS_ADDR));
+        uart_puts(", status=");
+        uart_put_hex32(status);
+        uart_puts("\r\n");
+        return 3;
+    }
+
+    if ((status & DMA_STATUS_DONE_MASK) != DMA_STATUS_DONE_MASK) {
+        uart_puts("DMA DONE flags missing, status=");
+        uart_put_hex32(status);
+        uart_puts("\r\n");
+        return 4;
+    }
+
     if (((dma_irq_seen & DMA_IRQ_DONE_MASK) != DMA_IRQ_DONE_MASK) ||
         (dma_irq_count != 2u)) {
-        uart_puts("DMA two-interrupt test FAIL, count=");
+        uart_puts("Unexpected IRQ sequence, count=");
         uart_put_dec(dma_irq_count);
-        uart_puts(", irq_seen=");
+        uart_puts(", seen=");
         uart_put_hex32(dma_irq_seen);
         uart_puts("\r\n");
         return 5;
     }
 
-    compiler_barrier();
-    /*
-    * 扫描中断前快照，再打印结果；不受中断内缓存访问影响。
-    */
-    stale_count = detect_stale_dcache_data();
-
-    /*
-    * 一致性扫描结束后，再打印DMA的详细结果。
-    */
+    uart_puts("Step 2: BRAM -> DDR complete\r\n");
     errors = check_and_print_result();
 
-    if (stale_count != 0u) {
-        uart_puts("DCache stale line count: ");
-        uart_put_dec(stale_count);
-        uart_puts("\r\n");
-    }
-
-    uart_puts("IRQ count: ");
+    uart_puts("IRQ count=");
     uart_put_dec(dma_irq_count);
+    uart_puts(", final status=");
+    uart_put_hex32(status);
     uart_puts("\r\n");
 
-    if ((errors == 0u) && (stale_count == 0u)) {
-        uart_puts("DMA SPLIT-START TWO-IRQ + DCACHE COHERENCY TEST PASS\r\n");
+    if (errors == 0u) {
+        uart_puts("DDR -> BRAM -> DDR DMA TEST PASS\r\n");
         return 0;
     }
-    else {
-        uart_puts("DMA SPLIT-START TWO-IRQ + DCACHE COHERENCY TEST FAIL\r\n");
 
-        uart_puts("Data errors: ");
-        uart_put_dec(errors);
-        uart_puts("\r\n");
-
-        uart_puts("Stale cache lines: ");
-        uart_put_dec(stale_count);
-        uart_puts("\r\n");
-
-        return 4;
-    }
+    uart_puts("DDR -> BRAM -> DDR DMA TEST FAIL, errors=");
+    uart_put_dec(errors);
+    uart_puts("\r\n");
+    return 6;
 }
 
-/*
- * 裸机复位入口。CPU复位后没有硬件自动设置sp，所以必须先设置栈顶。
- * 0x8002_0000必须位于链接脚本分配的数据存储区范围内。
- */
 USED __attribute__((naked, noreturn, section(".text.start")))
 void _start(void)
 {
