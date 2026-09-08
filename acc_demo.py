@@ -67,13 +67,13 @@ net = nn.Sequential(OrderedDict([
 
     ("flatten", nn.Flatten()),
 
-    ("fc1", nn.Linear(400, 120)),
+    ("fc1", nn.Linear(400, 96)),
     ("relu3", nn.ReLU()),
 
-    ("fc2", nn.Linear(120, 84)),
+    ("fc2", nn.Linear(96, 64)),
     ("relu4", nn.ReLU()),
 
-    ("fc3", nn.Linear(84, 10))
+    ("fc3", nn.Linear(64, 10))
 ]))
 
 device = torch.device("cuda")

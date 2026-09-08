@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e">
     <diagram name="第 1 页" id="aSZmDfZVC2T8UtpIT6C4">
-        <mxGraphModel dx="1700" dy="766" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+        <mxGraphModel dx="1193" dy="766" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -160,16 +160,17 @@
                         <mxPoint as="offset"/>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="24" style="edgeStyle=none;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;startArrow=classic;startFill=1;" parent="1" source="-dnmw1ocH58ypHi0VwS--4" target="8" edge="1">
+                <mxCell id="24" style="edgeStyle=none;html=1;startArrow=classic;startFill=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="-dnmw1ocH58ypHi0VwS--4" target="8" edge="1">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="839" y="500"/>
                             <mxPoint x="940" y="500"/>
                             <mxPoint x="940" y="670"/>
                         </Array>
+                        <mxPoint x="910" y="670" as="targetPoint"/>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="25" value="axis" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="24" vertex="1" connectable="0">
+                <mxCell id="25" value="axis+部分寄存器配置信息" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="24" vertex="1" connectable="0">
                     <mxGeometry x="-0.4342" y="-4" relative="1" as="geometry">
                         <mxPoint as="offset"/>
                     </mxGeometry>
