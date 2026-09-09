@@ -76,7 +76,14 @@ net = nn.Sequential(OrderedDict([
     ("fc3", nn.Linear(64, 10))
 ]))
 
-device = torch.device("cuda")
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
+print("训练设备：", device)
 net = net.to(device)
 
 #训练
@@ -98,31 +105,121 @@ def export_for_soc(net, test_iter, out_dir="soc_export_int8"):
     out.mkdir(parents=True, exist_ok=True)
     scales = {}
 
+    def get_int8_scale(tensor):
+        max_value = float(tensor.detach().abs().max().item())
+        return max_value / 127.0 if max_value > 0 else 1.0
+
     # 浮点数先缩放、取整，再保存成INT8
     def save_int8(name, tensor, scale=None):
         data = tensor.detach().cpu().float().numpy()
 
         if scale is None:
-            max_value = float(np.abs(data).max())
-            scale = max_value / 127 if max_value > 0 else 1.0
+            scale = get_int8_scale(tensor)
 
         data_int8 = np.clip(
             np.rint(data / scale), -127, 127
         ).astype(np.int8)
 
         data_int8.tofile(out / f"{name}.bin")
-        scales[name] = scale
+        scales[name] = float(scale)
+        return float(scale)
 
-    # 保存全部权重和bias
-    for name, parameter in net.named_parameters():
-        save_int8(name.replace(".", "_"), parameter)
+    # 偏置必须与PE的INT32累加结果使用相同尺度：
+    # bias_scale = input_scale * weight_scale。
+    def save_bias_int32(name, tensor, input_scale, weight_scale):
+        data = tensor.detach().cpu().double().numpy()
+        acc_scale = float(input_scale) * float(weight_scale)
 
-    # 保存第一批中的前10张图片，要求是ToTensor后的[0,1]数据
+        int32_info = np.iinfo(np.int32)
+        data_int32 = np.clip(
+            np.rint(data / acc_scale),
+            int32_info.min,
+            int32_info.max
+        ).astype("<i4")
+
+        data_int32.tofile(out / f"{name}.bin")
+        scales[name] = acc_scale
+        return acc_scale
+
+    # 用一个测试批次估计各层激活范围。conv/relu/pool视为一个输出阶段，
+    # 全连接层与紧随其后的ReLU视为一个输出阶段。
     X, y = next(iter(test_iter))
-    save_int8("test_images", X[:10], scale=1.0 / 127)
+
+    input_image_scale = 1.0 / 127.0
+    layer_scales = {}
+
+    was_training = net.training
+    net.eval()
+    with torch.no_grad():
+        value = X.to(device)
+
+        value = net.pool1(net.relu1(net.conv1(value)))
+        layer_scales["conv1"] = {
+            "input_scale": input_image_scale,
+            "output_scale": get_int8_scale(value)
+        }
+
+        conv2_input_scale = layer_scales["conv1"]["output_scale"]
+        value = net.pool2(net.relu2(net.conv2(value)))
+        layer_scales["conv2"] = {
+            "input_scale": conv2_input_scale,
+            "output_scale": get_int8_scale(value)
+        }
+
+        fc1_input_scale = layer_scales["conv2"]["output_scale"]
+        value = net.flatten(value)
+        value = net.relu3(net.fc1(value))
+        layer_scales["fc1"] = {
+            "input_scale": fc1_input_scale,
+            "output_scale": get_int8_scale(value)
+        }
+
+        fc2_input_scale = layer_scales["fc1"]["output_scale"]
+        value = net.relu4(net.fc2(value))
+        layer_scales["fc2"] = {
+            "input_scale": fc2_input_scale,
+            "output_scale": get_int8_scale(value)
+        }
+
+        fc3_input_scale = layer_scales["fc2"]["output_scale"]
+        value = net.fc3(value)
+        layer_scales["fc3"] = {
+            "input_scale": fc3_input_scale,
+            "output_scale": get_int8_scale(value)
+        }
+
+    if was_training:
+        net.train()
+
+    # 权重保存为INT8；偏置保存为与对应INT32累加器同尺度的INT32。
+    for layer_name in ("conv1", "conv2", "fc1", "fc2", "fc3"):
+        layer = net.get_submodule(layer_name)
+        input_scale = layer_scales[layer_name]["input_scale"]
+        output_scale = layer_scales[layer_name]["output_scale"]
+
+        weight_scale = save_int8(
+            f"{layer_name}_weight", layer.weight
+        )
+        bias_scale = save_bias_int32(
+            f"{layer_name}_bias",
+            layer.bias,
+            input_scale,
+            weight_scale
+        )
+
+        # PE的INT32结果重新量化成下一层INT8输入时使用该乘数。
+        scales[f"{layer_name}_input_scale"] = input_scale
+        scales[f"{layer_name}_output_scale"] = output_scale
+        scales[f"{layer_name}_acc_scale"] = bias_scale
+        scales[f"{layer_name}_requant_multiplier"] = (
+            bias_scale / output_scale
+        )
+
+    # 只保存第一张32x32测试图片，数据范围由[0, 1]量化到[0, 127]。
+    save_int8("test_images", X[:1], scale=input_image_scale)
 
     # 标签是0～9的整数，直接保存
-    y[:10].cpu().numpy().astype(np.int8).tofile(
+    y[:1].cpu().numpy().astype(np.int8).tofile(
         out / "test_labels.bin"
     )
 
