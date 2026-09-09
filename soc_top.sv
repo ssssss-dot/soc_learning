@@ -466,7 +466,11 @@ assign except_i = trap_enter;//表示接受了一个中断，要flushex以及之
 assign trap_enter = csr_irq_request && ex_valid && !mem_req && !ex_req && !ldr_cpu_stall && !mem_csr_we && !wb_csr_we;
 
 // EX/MEM可以接收且当前EX指令没有被冲刷时，本条EX指令只提交一次
-assign ex_advance = !stall[3] && !flush_ex_mem;
+assign ex_advance =
+    !ldr_cpu_stall &&
+    !mem_req        &&
+    !ex_req         &&
+    !trap_enter;//cpu启动且后面的流水线没请求stall，也没有发生中断
 
 //ex_mem给ex的前递（打拍后的信号给到ex），要将上一条指令中的数据和现有的指令对比，所以要打拍之后的数据
 assign mem_reg_we_for_ex       = mem_reg_we;
