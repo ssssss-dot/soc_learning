@@ -34,6 +34,17 @@ reg [15:0] rd_count;// 当前输出拍编号，同时作为BRAM读地址
 reg [15:0] rd_len_reg;
 wire [15:0] total_beats;
 wire ram2ddr_start;// 写描述符握手产生的单周期启动信号
+wire bram_rd_en;
+wire [13:0] bram_rd_addr;
+
+assign bram_rd_en =
+    ram2ddr_start ||
+    (valid_o && ready_o && !last_o);
+
+assign bram_rd_addr =
+    ram2ddr_start
+        ? 14'd0
+        : rd_count[13:0] + 14'd1;
 
 assign ram2ddr_start = ctrl_wr_desc_valid && ctrl_wr_desc_ready;
 assign total_beats = ({1'b0, rd_len_reg} + 17'd3) >> 2;//dma一拍搬运一个字，len的单位是字节，除以4做转换，判断last什么时候拉高，同时扩展一位防止溢出
@@ -112,12 +123,10 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
+// 同步读端口只保留一个 bram[...] 读取表达式，以便 Vivado 推断 BRAM
 always @(posedge clk) begin
-    if (ram2ddr_start) begin
-        data_o <= bram[14'd0];
-    end
-    else if (valid_o && ready_o && !last_o) begin
-        data_o <= bram[rd_count[13:0] + 14'd1];
+    if (bram_rd_en) begin
+        data_o <= bram[bram_rd_addr];
     end
 end
 
