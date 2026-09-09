@@ -25,7 +25,9 @@ module dma_subsystem_top(
 
     // DMA AXI master interface to crossbar/DDR
     taxi_axi_if.wr_mst        m_axi_wr,
-    taxi_axi_if.rd_mst        m_axi_rd
+    taxi_axi_if.rd_mst        m_axi_rd,
+    output [15:0] rd_bram_offset_active,
+    output [15:0] wr_bram_offset_active
 );
 
 wire [`DataBus] ctrl_rd_desc_src_addr;
@@ -153,7 +155,9 @@ dma_ctrl dma_ctrl_inst(
     .wr_desc_valid(ctrl_wr_desc_valid),
     .wr_desc_ready(ctrl_wr_desc_ready),
     .wr_desc_sts_valid(ctrl_wr_desc_sts_valid),
-    .wr_desc_sts_error(ctrl_wr_desc_sts_error)
+    .wr_desc_sts_error(ctrl_wr_desc_sts_error),
+    .rd_bram_offset_active (rd_bram_offset_active),
+    .wr_bram_offset_active (wr_bram_offset_active)
 );
 
 taxi_axi_dma #(
@@ -199,7 +203,13 @@ bram_for_acc bram_for_acc_inst(
     .ctrl_wr_desc_valid(ctrl_wr_desc_valid),
     .ctrl_wr_desc_ready(ctrl_wr_desc_ready),
 
-    .write_blocked(acc_bram_blocked)
+    .ctrl_rd_desc_valid(ctrl_rd_desc_valid),
+    .ctrl_rd_desc_ready(ctrl_rd_desc_ready),
+
+    .write_blocked(acc_bram_blocked),
+
+    .rd_bram_offset(rd_bram_offset_active),
+    .wr_bram_offset(wr_bram_offset_active)
 );
 
 endmodule

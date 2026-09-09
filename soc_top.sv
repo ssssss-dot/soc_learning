@@ -392,6 +392,8 @@ wire dma_we;
 wire [`DataBus] dma_rdata;
 wire dma_irq;//dma中断拉高信号
 wire dma_wr_done_pulse;//只给DCache失效使用，不受CPU/DMA中断屏蔽影响
+wire [15:0] rd_bram_offset_active;
+wire [15:0] wr_bram_offset_active;
 // 加速器尚未接入；BRAM回环测试阶段由DMA独占共享BRAM。
 wire acc_bram_blocked;
 assign acc_bram_blocked = 1'b0;
@@ -1472,6 +1474,10 @@ dma_subsystem_top u_dma_subsystem_top(
     // DMA中断
     .dma_irq(dma_irq),
     .dma_wr_done_pulse(dma_wr_done_pulse),
+
+    // 当前DMA任务锁存的BRAM字节偏移
+    .rd_bram_offset_active(rd_bram_offset_active),
+    .wr_bram_offset_active(wr_bram_offset_active),
 
     // DMA作为AXI master接入crossbar
     .m_axi_wr(s_axi[5]),

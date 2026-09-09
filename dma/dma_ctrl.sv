@@ -47,7 +47,11 @@ module dma_ctrl(
     input             wr_desc_sts_valid,//dma写任务完成
     input  [3:0]      wr_desc_sts_error,
 
-    output dma_wr_done_pulse//给dcache做一致性复位
+    output dma_wr_done_pulse,//给dcache做一致性复位
+
+    //给ram的offset配置数据
+    output reg [15:0] rd_bram_offset_active,
+    output reg [15:0] wr_bram_offset_active
 );
 
 localparam IDLE_M = 2'd0;//锁存，等握手
@@ -91,6 +95,8 @@ reg [`DataBus] dma_ctrl;
 wire [`DataBus] dma_status;
 reg [`DataBus] irq_status;
 reg [`DataBus] irq_enable;
+reg [`DataBus] dma_byte_offset_rd;//只用低16位，ram为64KB，表示偏移字节数，后续如果ram每位存一个字要做地址转换
+reg [`DataBus] dma_byte_offset_wr;
 
 //中断原因的掩码
 wire [`DataBus] irq_set_mask;
@@ -180,6 +186,22 @@ assign irq_clear_write = (state_m == IDLE_M) &&
 //irq_clear_mask[1]：清除写完成状态
 //irq_clear_mask[2]：清除读错误状态
 //irq_clear_mask[3]：清除写错误状态
+
+//给偏移量
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        rd_bram_offset_active  <= 16'd0;
+        wr_bram_offset_active  <= 16'd0;
+    end
+    else begin
+        if (start_pulse_rd)
+            rd_bram_offset_active <= dma_byte_offset_rd[15:0];
+
+        if (start_pulse_wr)
+            wr_bram_offset_active <= dma_byte_offset_wr[15:0];
+    end
+end
+
 wire [`DataBus] irq_clear_mask;
 assign irq_clear_mask = irq_clear_write ? {28'b0, dma_wdata[3:0]} : 32'b0;
 //中断原因寄存器更新
@@ -340,7 +362,8 @@ always @(posedge clk or negedge rst_n)begin
         dma_ctrl <= 'd0;
         irq_enable <= 'd0;
         dma_rdata_q <= 'd0;
-
+        dma_byte_offset_rd <= 32'd0;
+        dma_byte_offset_wr <= 32'd0;
     end
     else begin
         case (state_m)
@@ -365,6 +388,12 @@ always @(posedge clk or negedge rst_n)begin
                             end
                             `DMA_IRQ_ENABLE_ADDR:begin
                                 irq_enable <= dma_wdata;
+                            end
+                            `DMA_RD_BYTE_OFFSET_ADDR: begin
+                                dma_byte_offset_rd <= {16'd0, dma_wdata[15:0]};
+                            end
+                            `DMA_WR_BYTE_OFFSET_ADDR: begin
+                                dma_byte_offset_wr <= {16'd0, dma_wdata[15:0]};
                             end
                         endcase
                     end
@@ -394,6 +423,11 @@ always @(posedge clk or negedge rst_n)begin
                             `DMA_IRQ_ENABLE_ADDR:
                                 dma_rdata_q <= irq_enable;
 
+                            `DMA_RD_BYTE_OFFSET_ADDR:
+                                dma_rdata_q <= dma_byte_offset_rd;
+
+                            `DMA_WR_BYTE_OFFSET_ADDR:
+                                dma_rdata_q <= dma_byte_offset_wr;
                             default:
                                 dma_rdata_q <= 32'b0;
                         endcase
