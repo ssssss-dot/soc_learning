@@ -320,7 +320,20 @@
 `define POOL_BASE_ADDR  32'h4000_6000
 `define FC_BASE_ADDR    32'h4000_7000
 
+// Conv配置寄存器：CPU MMIO字节地址，每个寄存器占4字节
+`define CONV_CONTROL_ADDR     (`CONV_BASE_ADDR + 32'h00)// [0]启动，写1自清；[1]中断使能
+`define CONV_STATUS_ADDR      (`CONV_BASE_ADDR + 32'h04)// [0]busy只读；[1]done、[2]error写1清除
+`define CONV_INPUT_SHAPE_ADDR (`CONV_BASE_ADDR + 32'h08)// [15:0]输入宽度；[31:16]输入高度
+`define CONV_CHANNELS_ADDR    (`CONV_BASE_ADDR + 32'h0C)// [15:0]输入通道数；[31:16]输出通道数
+`define CONV_BIAS_BASE_ADDR   (`CONV_BASE_ADDR + 32'h10)// 寄存器内容[13:0]为bias的BRAM字地址
+`define CONV_QUANT_MULT_ADDR  (`CONV_BASE_ADDR + 32'h14)// 重量化整数乘数
+`define CONV_QUANT_SHIFT_ADDR (`CONV_BASE_ADDR + 32'h18)// [5:0]重量化右移位数
+
 //加速器共享64KB的ram
 `define RAM_SIZE 0:16383
+//ram地址分配
+`define OUTPUT_BASE_ADDR 32'h0000_0000
+`define PICTURE_BASE_ADDR 32'h1400
+`define WEIGHT_BASE_ADDR 32'h1C00
 
 `endif
