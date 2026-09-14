@@ -328,12 +328,11 @@
 `define CONV_BIAS_BASE_ADDR   (`CONV_BASE_ADDR + 32'h10)// 寄存器内容[13:0]为bias的BRAM字地址
 `define CONV_QUANT_MULT_ADDR  (`CONV_BASE_ADDR + 32'h14)// 重量化整数乘数
 `define CONV_QUANT_SHIFT_ADDR (`CONV_BASE_ADDR + 32'h18)// [5:0]重量化右移位数
+`define CONV_INPUT_BASE_ADDR  (`CONV_BASE_ADDR + 32'h1C)// 输入特征图在BRAM中的字节基地址
+`define CONV_WEIGHT_BASE_ADDR (`CONV_BASE_ADDR + 32'h20)// 权重在BRAM中的字节基地址
 
 //加速器共享64KB的ram
 `define RAM_SIZE 0:16383
 //ram地址分配
-`define OUTPUT_BASE_ADDR 32'h0000_0000
-`define PICTURE_BASE_ADDR 32'h1400
-`define WEIGHT_BASE_ADDR 32'h1C00
 
 `endif

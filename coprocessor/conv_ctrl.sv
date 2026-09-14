@@ -1,47 +1,118 @@
 `include "define.sv"
 
+//输出地址从0开始，每次覆盖
 module conv_ctrl(
     input clk,
     input rst_n,
 
-    // MMIO router -> Conv：寄存器访问请求
-    input conv_req_valid,
-    output conv_req_ready,
+    // 给int32到int8的量化模块
+    input [5:0] current_quant_shift_i,//右移缩放：对宽位数乘积右移的位数
+    input [`DataBus] current_quant_mult_i,//乘法缩放：32位无符号整数乘数
 
-    // Conv -> MMIO router：寄存器访问响应
-    output conv_rsp_valid,
-    input conv_rsp_ready,
+    // 给输入地址生成模块和im2col：遍历像素、判断换行和窗口有效
+    // 同时给输出地址生成模块，用于推导卷积输出宽度和高度
+    input [15:0] current_input_width_i,//输入特征图宽度，对应INPUT_SHAPE[15:0]
+    input [15:0] current_input_height_i,//输入特征图高度，对应INPUT_SHAPE[31:16]
 
-    input [`DataBus] conv_wdata,
-    input [`DataAddrBus] conv_addr,// CPU完整字节地址
-    input [3:0] conv_wstrb,
-    input conv_we,// 1：写寄存器；0：读寄存器
+    // 给输入/权重地址生成模块和跨输入通道累加控制模块
+    input [15:0] current_input_channels_i,//输入通道总数，用于通道遍历及判断何时完成累加
 
-    output [`DataBus] conv_rdata
+    // 给权重/bias/输出地址生成模块和PE输出通道分组控制模块
+    input [15:0] current_output_channels_i,//输出通道总数，用于分组及判断当前组哪些PE行有效
+
+    // 给bias地址生成模块；读出的bias数据再送给bias加法模块
+    input [13:0] current_bias_base_i,//BRAM字地址，每个int32 bias占一个32位字，地址加1
+
+    // 输入特征图和权重在BRAM中的字节基地址
+    input [`DataBus] current_input_base_i,
+    input [`DataBus] current_weight_base_i,
+
+    // 直接输出给int32到int8量化模块
+    output [5:0] current_quant_shift_o,
+    output [`DataBus] current_quant_mult_o,
+
+    // 直接输出给输入地址生成、im2col和输出地址生成模块
+    output [15:0] current_input_width_o,
+    output [15:0] current_input_height_o,
+
+    // 直接输出给输入/权重地址生成和跨输入通道累加控制模块
+    output [15:0] current_input_channels_o,
+
+    // 直接输出给权重/bias/输出地址生成和PE输出通道分组控制模块
+    output [15:0] current_output_channels_o,
+
+    // 直接输出给bias地址生成模块
+    output reg [13:0] current_bias_base_o,
+    output reg [`DataBus] current_bias_end_o,
+
+    // 直接输出给输入和权重地址生成模块
+    output reg [`DataBus] current_input_base_o,
+    output reg [`DataBus] current_weight_base_o,
+    output reg [`DataBus] current_input_end_o,
+    output reg [`DataBus] current_weight_end_o,
+
+    //卷积状态
+    output done,
+    output busy,
+    output error,
+
+    input start,//启动脉冲
+
+    //给pearray的信号
+    output [4:0] weight_target,
+    output weight_loading_en,
+    output valid_weight
 );
 
-// Conv寄存器声明；复位、MMIO读写和执行控制逻辑后续实现
-// CONTROL：[0]start写1自清；[1]irq_enable；其余位保留
-reg [`DataBus] conv_control_reg;
+assign current_quant_shift_o = current_quant_shift_i;
+assign current_quant_mult_o = current_quant_mult_i;
+assign current_input_width_o = current_input_width_i;
+assign current_input_height_o = current_input_height_i;
+assign current_input_channels_o = current_input_channels_i;
+assign current_output_channels_o = current_output_channels_i;
+// 三个end均表示对应数据最后一个地址的下一个地址，即有效范围为[base, end)。
+// 输入和权重按int8计算，地址单位为字节；bias地址单位为32位字。
+wire [`DataBus] input_size_calc;
+wire [`DataBus] weight_size_calc;
+wire [`DataBus] input_end_calc;
+wire [`DataBus] weight_end_calc;
+wire [`DataBus] bias_end_calc;
 
-// STATUS：[0]busy由硬件更新；[1]done、[2]error锁存并由软件写1清除
-// 其余位保留
-reg [`DataBus] conv_status_reg;
+assign input_size_calc =
+       {16'd0, current_input_width_i}
+     * {16'd0, current_input_height_i}
+     * {16'd0, current_input_channels_i};
 
-// INPUT_SHAPE：[15:0]输入宽度；[31:16]输入高度
-reg [`DataBus] conv_input_shape_reg;
+assign weight_size_calc =
+       {16'd0, current_input_channels_i}
+     * {16'd0, current_output_channels_i}
+     * 32'd25;
 
-// CHANNELS：[15:0]输入通道数；[31:16]输出通道数
-reg [`DataBus] conv_channels_reg;
+assign input_end_calc = current_input_base_i + input_size_calc;
+assign weight_end_calc = current_weight_base_i + weight_size_calc;
+assign bias_end_calc =
+       {18'd0, current_bias_base_i}
+     + {16'd0, current_output_channels_i};
 
-// BIAS_BASE：[13:0]bias在BRAM中的字地址；[31:14]保留
-// CONV_BIAS_BASE_ADDR是CPU访问本寄存器的字节地址，两者单位不同
-reg [`DataBus] conv_bias_base_reg;
+// start到来的时钟沿锁存本次卷积的结束地址，之后保持到下一次start。
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        current_input_base_o <= 'd0;
+        current_weight_base_o <= 'd0;
+        current_bias_base_o <= 'd0;
+        current_input_end_o <= 'd0;
+        current_weight_end_o <= 'd0;
+        current_bias_end_o <= 'd0;
+    end
+    else if (start) begin
+        current_input_base_o <= current_input_base_i;
+        current_weight_base_o <= current_weight_base_i;
+        current_bias_base_o <= current_bias_base_i;
+        current_input_end_o <= input_end_calc;
+        current_weight_end_o <= weight_end_calc;
+        current_bias_end_o <= bias_end_calc;
+    end
+end
 
-// QUANT_MULT：32位无符号整数乘数
-reg [`DataBus] conv_quant_mult_reg;
-
-// QUANT_SHIFT：[5:0]右移位数；[31:6]保留
-reg [`DataBus] conv_quant_shift_reg;
 
 endmodule

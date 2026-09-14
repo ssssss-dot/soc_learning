@@ -5,8 +5,7 @@ module pe_ws(
     input clk,
     input rst_n,
 
-    input en_i,//cpu通过配置寄存器拉高使能信号
-    output reg en_o,//让en信号跟随流水线流动
+    input en_i,//始终拉高
     input valid_data_i,//表示输入数据有效
     output reg valid_data_o,//表示计算结果有效
     input signed [`ByteWidth] up,
@@ -14,8 +13,11 @@ module pe_ws(
     output reg signed [`DataBus] right,//输出数据
     output reg signed[`ByteWidth] down,
 
+    input weight_loading_en_i,//本地装载使能，由pe_array比较目标列编号后产生
     input signed [`ByteWidth] weight_i,
-    input valid_weight
+    input valid_weight_i,
+    output reg valid_weight_o,
+    output reg signed [`ByteWidth] weight_o//转发寄存器，与本地weight_reg独立
 );
 
 reg signed [`ByteWidth] weight_reg;
@@ -27,24 +29,27 @@ assign product_ext = {
     {16{product[15]}},//把符号位重复16次
     product
 };
-
-//加载权重
+// 只有目标编号匹配且权重有效时，才更新本地计算权重。
 always @(posedge clk or negedge rst_n)begin
     if(!rst_n)begin
         weight_reg <= 'd0;
     end
-    else if(valid_weight)begin
+    else if(weight_loading_en_i && valid_weight_i)begin
         weight_reg <= weight_i;
     end
 end
 
-//使能信号流水线
+
 always @(posedge clk or negedge rst_n)begin
     if(!rst_n)begin
-        en_o <= 'd0;
+        valid_weight_o <= 'd0;
+        weight_o <= 'd0;
     end
     else begin
-        en_o <= en_i;
+        // 不匹配本地编号的权重也必须继续传递，不能被本地装载使能截断。
+        valid_weight_o <= valid_weight_i;
+        if(valid_weight_i)
+            weight_o <= weight_i;
     end
 end
 

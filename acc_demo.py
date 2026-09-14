@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import copy
 import json
+import math
 from collections import OrderedDict
 from pathlib import Path
 import numpy as np
@@ -99,11 +100,44 @@ d2l.train_ch6(
     device=device
 )
 
+def get_requant_params(ratio):
+    """把正的缩放比例转换为32位无符号MULT和6位SHIFT。"""
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError(f"量化缩放比例必须是有限正数：{ratio}")
+
+    # 优先使用较大的SHIFT保留精度，MULT必须能装入32位寄存器。
+    for shift in range(63, -1, -1):
+        scaled = ratio * (1 << shift)
+        if not math.isfinite(scaled):
+            continue
+        mult = round(scaled)
+        if 1 <= mult <= 0xFFFFFFFF:
+            # 约去公共的2因子，例如把1/16直接表示为MULT=1、SHIFT=4。
+            while shift > 0 and mult % 2 == 0:
+                mult //= 2
+                shift -= 1
+            return mult, shift
+
+    raise ValueError(f"量化缩放比例超出MULT/SHIFT可表示范围：{ratio}")
+
+
 #保存数据的函数
 def export_for_soc(net, test_iter, out_dir="soc_export_int8"):
     out = Path(out_dir).expanduser()
     out.mkdir(parents=True, exist_ok=True)
-    scales = {}
+    scales = {
+        "_quantization": {
+            "description": "每层的quant_mult、quant_shift是可写入硬件寄存器的整数值；同层所有输出通道共用。",
+            "quant_mult_bits": 32,
+            "quant_mult_signed": False,
+            "quant_shift_bits": 6,
+            "quant_shift_range": [0, 63],
+            "quant_shift_note": "32位寄存器仅低6位有效，其余位写0。",
+            "target_formula": "input_scale * weight_scale / output_scale",
+            "hardware_scale_formula": "quant_mult / (2 ** quant_shift)",
+            "product_note": "int32累加结果乘无符号quant_mult，乘积使用64位有符号数保存。"
+        }
+    }
 
     def get_int8_scale(tensor):
         max_value = float(tensor.detach().abs().max().item())
@@ -211,9 +245,12 @@ def export_for_soc(net, test_iter, out_dir="soc_export_int8"):
         scales[f"{layer_name}_input_scale"] = input_scale
         scales[f"{layer_name}_output_scale"] = output_scale
         scales[f"{layer_name}_acc_scale"] = bias_scale
-        scales[f"{layer_name}_requant_multiplier"] = (
-            bias_scale / output_scale
-        )
+        ratio = bias_scale / output_scale
+        mult, shift = get_requant_params(ratio)
+        scales[f"{layer_name}_requant_multiplier"] = ratio
+        scales[f"{layer_name}_quant_mult"] = mult
+        scales[f"{layer_name}_quant_shift"] = shift
+        scales[f"{layer_name}_requant_multiplier_approx"] = mult / (1 << shift)
 
     # 只保存第一张32x32测试图片，数据范围由[0, 1]量化到[0, 127]。
     save_int8("test_images", X[:1], scale=input_image_scale)
@@ -225,7 +262,7 @@ def export_for_soc(net, test_iter, out_dir="soc_export_int8"):
 
     # 保存缩放比例，后续硬件计算时需要
     (out / "scales.json").write_text(
-        json.dumps(scales, indent=2), encoding="utf-8"
+        json.dumps(scales, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
     print("保存位置：", out.resolve())
