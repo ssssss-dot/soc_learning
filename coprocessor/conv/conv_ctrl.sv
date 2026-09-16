@@ -51,18 +51,42 @@ module conv_ctrl(
     output reg [`DataBus] current_input_end_o,
     output reg [`DataBus] current_weight_end_o,
 
+    //每个地址读取完成信号（到end了）
+    input weight_done_i,
+    input input_done_i,
+    input bias_done_i,
+
     //卷积状态
     output done,
     output busy,
     output error,
 
-    input start,//启动脉冲
+    //启动脉冲
+    input start,
 
     //给pearray的信号
     output [4:0] weight_target,
     output weight_loading_en,
-    output valid_weight
+    output valid_weight,
+
+    //给read_arbiter的信号
+    output reg rd_req,
+    output reg [1:0] rd_sel,
+    output reg addr_init//表示地址初始化完成
 );
+
+//状态编码
+localparam IDLE        = 3'd0;
+localparam ADDR_INIT   = 3'd1;
+localparam READ_WEIGHT = 3'd2;//把权重给pe
+localparam READ_INPUT  = 3'd3;//把输入给im2col
+localparam READ_BIAS   = 3'd4;//把bias给bias缓存
+localparam FINISH      = 3'd5;
+
+//数据源编码
+localparam RD_INPUT = 2'd0;
+localparam RD_WEIGHT = 2'd1;
+localparam RD_BIAS = 2'd2;
 
 assign current_quant_shift_o = current_quant_shift_i;
 assign current_quant_mult_o = current_quant_mult_i;
