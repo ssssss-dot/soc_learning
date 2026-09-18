@@ -13,15 +13,15 @@ module result_ram_bank #(
     output reg signed [31:0] rd_data
 );
 
-    (* ram_style = "block" *)
-    reg signed [31:0] mem [0:DEPTH-1];
+(* ram_style = "block" *) reg signed [31:0] mem [0:DEPTH-1];
 
-    always @(posedge clk) begin
-        if (wr_en)
-            mem[wr_addr] <= wr_data;
-
-        if (rd_en)
-            rd_data <= mem[rd_addr]; // 同步读：时钟沿后得到数据
+always @(posedge clk) begin
+    if (wr_en) begin
+        mem[wr_addr] <= wr_data;
     end
+    if (rd_en) begin
+        rd_data <= mem[rd_addr]; // 同步读：时钟沿后得到数据
+    end
+end
 
 endmodule
