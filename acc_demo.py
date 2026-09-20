@@ -136,6 +136,13 @@ def export_for_soc(net, test_iter, out_dir="soc_export_int8"):
             "target_formula": "input_scale * weight_scale / output_scale",
             "hardware_scale_formula": "quant_mult / (2 ** quant_shift)",
             "product_note": "int32累加结果乘无符号quant_mult，乘积使用64位有符号数保存。"
+        },
+        "_conv_weight_layout": {
+            "layout": "[input_channel][kernel_index][pe_row]",
+            "pe_rows": 16,
+            "kernel_index": "kernel_y * kernel_width + kernel_x",
+            "padding": "输出通道不足16时，高编号PE行的权重补0。",
+            "address_formula": "((input_channel * kernel_elements + kernel_index) * 16 + pe_row) bytes"
         }
     }
 
@@ -155,6 +162,47 @@ def export_for_soc(net, test_iter, out_dir="soc_export_int8"):
         ).astype(np.int8)
 
         data_int8.tofile(out / f"{name}.bin")
+        scales[name] = float(scale)
+        return float(scale)
+
+    # 把PyTorch卷积权重[Cout][Cin][Kh][Kw]重排成硬件PE阵列需要的
+    # [Cin][Kh*Kw][16]。固定输入通道和卷积核位置时，16个PE行的
+    # 权重连续存放，BRAM连续读取4个32位字即可组成完整权重向量。
+    def save_conv_weight_int8(name, tensor, pe_rows=16, scale=None):
+        data = tensor.detach().cpu().float().numpy()
+
+        if data.ndim != 4:
+            raise ValueError(
+                f"{name}必须是[Cout][Cin][Kh][Kw]四维卷积权重，"
+                f"实际形状为{data.shape}"
+            )
+
+        if scale is None:
+            scale = get_int8_scale(tensor)
+
+        data_int8 = np.clip(
+            np.rint(data / scale), -127, 127
+        ).astype(np.int8)
+
+        out_channels, in_channels, kernel_height, kernel_width = (
+            data_int8.shape
+        )
+        if out_channels > pe_rows:
+            raise ValueError(
+                f"{name}有{out_channels}个输出通道，"
+                f"超过当前PE阵列的{pe_rows}行"
+            )
+
+        kernel_elements = kernel_height * kernel_width
+        weight_pe = np.zeros(
+            (in_channels, kernel_elements, pe_rows),
+            dtype=np.int8
+        )
+        weight_pe[:, :, :out_channels] = data_int8.transpose(
+            1, 2, 3, 0
+        ).reshape(in_channels, kernel_elements, out_channels)
+
+        weight_pe.tofile(out / f"{name}.bin")
         scales[name] = float(scale)
         return float(scale)
 
@@ -231,9 +279,14 @@ def export_for_soc(net, test_iter, out_dir="soc_export_int8"):
         input_scale = layer_scales[layer_name]["input_scale"]
         output_scale = layer_scales[layer_name]["output_scale"]
 
-        weight_scale = save_int8(
-            f"{layer_name}_weight", layer.weight
-        )
+        if isinstance(layer, nn.Conv2d):
+            weight_scale = save_conv_weight_int8(
+                f"{layer_name}_weight", layer.weight
+            )
+        else:
+            weight_scale = save_int8(
+                f"{layer_name}_weight", layer.weight
+            )
         bias_scale = save_bias_int32(
             f"{layer_name}_bias",
             layer.bias,
