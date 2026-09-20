@@ -61,9 +61,9 @@ module conv_ctrl(
     input weight_vec_valid_i,//表示一列的16个权重拼接好了，可以送到pe阵列里面
 
     //卷积状态
-    output done,
-    output busy,
-    output error,
+    output reg done,
+    output reg busy,
+    output reg error,
 
     //启动脉冲
     input start,
@@ -73,18 +73,17 @@ module conv_ctrl(
     output reg weight_loading_en,
     output reg valid_weight,
 
-    //缓存给ctrl的req信号
-    input input_req,
-    input weight_req,
-    input bias_req,
-
     //给addr_gen的信号
     output reg rd_req,
     output reg [1:0] rd_sel,
-    output reg addr_init,//地址初始化脉冲
+    output reg addr_init,
 
-    output reg [2:0] channel_cnt,//记录当前是第几个通道在计算
+    output reg [15:0] channel_cnt,//记录当前是第几个通道在计算
 
+    //表示当前哪个地址可以开始增加
+    output reg weight_addr_begin,
+    output reg input_addr_begin,
+    output reg bias_addr_begin
 );
 
 //状态编码
@@ -97,14 +96,15 @@ localparam READ_BIAS   = 3'd4;//把bias给bias缓存
 localparam WAIT_OUTPUT  = 3'd7;//写回完成，可以拉高中断
 localparam FINISH      = 3'd5;
 
+//数据源编码
+localparam RD_INPUT = 2'd0;
+localparam RD_WEIGHT = 2'd1;
+localparam RD_BIAS = 2'd2;
+
 reg [2:0] state;
 reg [2:0] next_state;
 wire last_channel;//标志最后一个通道的卷积
 assign last_channel = (channel_cnt + 16'd1 == current_input_channels_i);
-
-//ctrl 每次进入 READ_WEIGHT 时产生的一拍脉冲，用于清零列计数器和 weight_all_sent
-wire weight_load_start;
-assign weight_load_start = (state != READ_WEIGHT) && (next_state == READ_WEIGHT);
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
@@ -125,7 +125,8 @@ always @(*)begin
             next_state = READ_WEIGHT;
         end
         READ_WEIGHT:begin
-            if(weight_done_i)begin
+            //target == 31表示最后一组数据发送完毕，在技术块里面定义
+            if (weight_done_i && weight_target == 5'd31)begin
                 next_state = READ_INPUT;
             end
         end
@@ -155,6 +156,9 @@ always @(*)begin
         FINISH:begin
             next_state = IDLE;
         end
+        default: begin
+            next_state = IDLE;
+        end
     endcase
 end
 
@@ -166,19 +170,71 @@ always @(posedge clk or negedge rst_n)begin
         rd_req <= 'd0;
         rd_sel <= 'd0;
         addr_init <= 'd0;
-        weight_loding_en <= 'd0;
-
+        weight_loading_en <= 'd0;
+        valid_weight <= 'd0;
+        channel_cnt <= 'd0;
     end
     else begin
+        addr_init         <= 1'b0;
+        rd_req            <= 1'b0;
+        weight_loading_en <= 1'b0;
+        valid_weight      <= 1'b0;
+        done              <= 1'b0;
         case(state)
+        IDLE:begin
+            if(start)begin
+                busy <= 1'b1;
+                done <= 'd0;
+                error <= 'd0;
+                rd_req <= 'd0;
+                rd_sel <= 'd0;
+                addr_init <= 'd0;
+                weight_loading_en <= 'd0;
+                valid_weight <= 'd0;
+                channel_cnt <= 'd0;
+            end
+        end
+        ADDR_INIT:begin
+            addr_init <= 1'b1;
+        end
+        READ_WEIGHT:begin
+            weight_loading_en <= 1'b1;
+            rd_req <= !weight_done_i;
+            rd_sel <= RD_WEIGHT;
+            //缓存准备好16个权重，且目标列仍在0～24
+            //由于valid_weight是时钟沿触发，会晚一拍，后续要在缓存模块里面做同步
+            if (!weight_done_i && weight_vec_valid_i && (weight_target <= 5'd24)) begin
+                valid_weight <= 1'b1;
+            end
+        end
+        READ_INPUT:begin
+            rd_req <= !input_done_i;
+            rd_sel <= RD_INPUT;
+        end
+        WAIT_CHANNEL: begin
+            if (channel_done_i) begin//pearray计算完毕且部分和写入完成
+                if (!last_channel)begin
+                    channel_cnt <= channel_cnt + 1'b1;
+                end
+                else if(last_channel)begin
+                    channel_cnt <= 'd0;
+                end
+            end
+        end
+        READ_BIAS:begin
+            rd_req <= !bias_done_i;
+            rd_sel <= RD_BIAS;
+        end
+        WAIT_OUTPUT:begin
+        end
+        FINISH:begin
+            busy <= 'd0;
+            done <= 'd1;
+            error <= 'd0;
+        end
         endcase
     end
 end
-
-//数据源编码
-localparam RD_INPUT = 2'd0;
-localparam RD_WEIGHT = 2'd1;
-localparam RD_BIAS = 2'd2;
 
 assign current_quant_shift_o = current_quant_shift_i;
 assign current_quant_mult_o = current_quant_mult_i;
@@ -237,7 +293,7 @@ always @(posedge clk or negedge rst_n) begin
         current_bias_end_o <= 'd0;
         current_output_end_o <= 'd0;
     end
-    else if (start) begin
+    else if (start && (state == IDLE)) begin
         current_input_base_o <= current_input_base_i;
         current_weight_base_o <= current_weight_base_i;
         current_bias_base_o <= current_bias_base_i;
@@ -248,5 +304,47 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
+//weight_target计数
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        weight_target <= 5'd0;
+    end
+    else if (state != READ_WEIGHT) begin
+        //下一次进入READ_WEIGHT时从第0列开始
+        weight_target <= 5'd0;
+    end
+    else if (valid_weight) begin
+        if (weight_target == 5'd24) begin
+            //25～31不会匹配任何PE列
+            //用31表示25组权重已经全部发送
+            weight_target <= 5'd31;
+        end
+        else begin
+            weight_target <= weight_target + 5'd1;
+        end
+    end
+end
+
+always @(posedge clk or negedge rst_n)begin
+    if(!rst_n)begin
+        weight_addr_begin <= 'd0;
+        input_addr_begin <= 'd0;
+        bias_addr_begin <= 'd0;
+    end
+    else begin
+        weight_addr_begin <= 'd0;
+        input_addr_begin <= 'd0;
+        bias_addr_begin <= 'd0;
+        if ((state != READ_WEIGHT) && (next_state == READ_WEIGHT))begin
+            weight_addr_begin <= 1'b1;
+        end
+        if ((state != READ_INPUT) && (next_state == READ_INPUT))begin
+            input_addr_begin <= 1'b1;
+        end
+        if ((state != READ_BIAS) && (next_state == READ_BIAS))begin
+            bias_addr_begin <= 1'b1;
+        end
+    end
+end
 
 endmodule

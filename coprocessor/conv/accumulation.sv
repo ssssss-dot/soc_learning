@@ -8,7 +8,7 @@ module accumulation(
     input signed [`DataBus] result_i [0:15],
     input [15:0] valid_result_i,
 
-    output [`DataBus] result_o
+    output [`DataBus] result_o//加了偏置的int32输出
 );
 
 endmodule
