@@ -51,10 +51,12 @@ module conv_ctrl(
     output reg [`DataBus] current_input_end_o,
     output reg [`DataBus] current_weight_end_o,
     output reg [`DataBus] current_output_end_o,//量化后INT8输出的结束字节地址，起始地址固定为0
+    output wire [7:0] input_last_word_addr_o,//给缓存的最后一个字地址
 
     //每个地址读取完成信号（到end了）
     input weight_done_i,
-    input input_done_i,
+    input input_cache_loaded_done_i,//表示输入缓存已经完成
+    input input_done_i,//表示已经向bram发出了最后一个请求，由addrgen给出
     input bias_done_i,
     input channel_done_i,//一个通道的特征图卷积完成
     input output_done_i,
@@ -83,15 +85,18 @@ module conv_ctrl(
     //表示当前哪个地址可以开始增加
     output reg weight_addr_begin,
     output reg input_addr_begin,
-    output reg bias_addr_begin
+    output reg bias_addr_begin,
+
+    //给im2col的开始脉冲信号
+    output reg im2col_start
 );
 
 //状态编码
 localparam IDLE        = 3'd0;
 localparam ADDR_INIT   = 3'd1;//给addr_gen一个初始化的脉冲信号
 localparam READ_WEIGHT = 3'd2;//把权重给pe
-localparam READ_INPUT  = 3'd3;//把输入给im2col
-localparam WAIT_CHANNEL = 3'd6;//pe_array到最后一个数据写完的过程
+localparam READ_INPUT  = 3'd3;//bram数据到缓存
+localparam WAIT_CHANNEL = 3'd6;//缓存到im2col再到pe_array再到最后一个数据写完的过程
 localparam READ_BIAS   = 3'd4;//把bias给bias缓存
 localparam WAIT_OUTPUT  = 3'd7;//写回完成，可以拉高中断
 localparam FINISH      = 3'd5;
@@ -131,7 +136,7 @@ always @(*)begin
             end
         end
         READ_INPUT:begin
-            if(input_done_i)begin
+            if(input_cache_loaded_done_i)begin
                 next_state = WAIT_CHANNEL;
             end
         end
@@ -173,6 +178,7 @@ always @(posedge clk or negedge rst_n)begin
         weight_loading_en <= 'd0;
         valid_weight <= 'd0;
         channel_cnt <= 'd0;
+        im2col_start <= 'd0;
     end
     else begin
         addr_init         <= 1'b0;
@@ -180,6 +186,7 @@ always @(posedge clk or negedge rst_n)begin
         weight_loading_en <= 1'b0;
         valid_weight      <= 1'b0;
         done              <= 1'b0;
+        im2col_start <= 'd0;
         case(state)
         IDLE:begin
             if(start)begin
@@ -203,13 +210,17 @@ always @(posedge clk or negedge rst_n)begin
             rd_sel <= RD_WEIGHT;
             //缓存准备好16个权重，且目标列仍在0～24
             //由于valid_weight是时钟沿触发，会晚一拍，后续要在缓存模块里面做同步
-            if (!weight_done_i && weight_vec_valid_i && (weight_target <= 5'd24)) begin
+            if (weight_vec_valid_i && (weight_target <= 5'd24)) begin
                 valid_weight <= 1'b1;
             end
         end
         READ_INPUT:begin
             rd_req <= !input_done_i;
             rd_sel <= RD_INPUT;
+            //输入数据已经加载完成，开始进行im2col
+            if (input_cache_loaded_done_i)begin
+                im2col_start <= 1'b1;
+            end
         end
         WAIT_CHANNEL: begin
             if (channel_done_i) begin//pearray计算完毕且部分和写入完成
@@ -243,7 +254,7 @@ assign current_input_height_o = current_input_height_i;
 assign current_input_channels_o = current_input_channels_i;
 assign current_output_channels_o = current_output_channels_i;
 
-// 各end均表示最后一个有效地址的下一个地址，即有效范围为[base, end)。
+// 各end均表示最后一个有效地址的下一个地址，即有效范围为[base, end)，都是bram的地址
 // 输入、权重和量化后的卷积输出按INT8计算，地址单位为字节；bias地址单位为32位字。
 wire [`DataBus] input_size_calc;
 wire [`DataBus] weight_size_calc;
@@ -259,10 +270,7 @@ assign input_size_calc =
      * {16'd0, current_input_height_i}
      * {16'd0, current_input_channels_i};
 
-assign weight_size_calc =
-       {16'd0, current_input_channels_i}
-     * {16'd0, current_output_channels_i}
-     * 32'd25;
+assign weight_size_calc = current_input_channels_i * 400;//weight填充时候会自动补0，所以每个通道都应该是400字节（16*5*5个权重）
 
 assign input_end_calc = current_input_base_i + input_size_calc;
 assign weight_end_calc = current_weight_base_i + weight_size_calc;
@@ -281,6 +289,20 @@ assign output_end_calc =
        {16'd0, output_width_calc}
      * {16'd0, output_height_calc}
      * {16'd0, current_output_channels_i};
+
+//给input_cache的信号，判断最后一个数据已经装入缓存
+wire [31:0] input_channel_bytes_calc;
+wire [31:0] input_last_word_addr_calc;
+
+assign input_channel_bytes_calc =
+      {16'd0, current_input_width_i}
+    * {16'd0, current_input_height_i};
+
+assign input_last_word_addr_calc =
+    (input_channel_bytes_calc - 32'd1) >> 2;//除以4转换为缓存内部的字地址
+
+assign input_last_word_addr_o =
+    input_last_word_addr_calc[7:0];
 
 //start到来的时钟沿锁存本次卷积的结束地址，之后保持到下一次start。
 always @(posedge clk or negedge rst_n) begin

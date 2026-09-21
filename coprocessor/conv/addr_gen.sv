@@ -65,9 +65,9 @@ wire [`DataBus] current_weight_end;
 //按照通道数生成每次权重通道计数的起始地址
 assign current_weight_base =
     weight_base_addr +
-    ({16'd0, channel_cnt} * WEIGHT_BYTES_PER_CHANNEL);
+    ({16'd0, channel_cnt} * WEIGHT_BYTES_PER_INPUT_CHANNEL);
 assign current_weight_end =
-    current_weight_base + WEIGHT_BYTES_PER_CHANNEL;
+    current_weight_base + WEIGHT_BYTES_PER_INPUT_CHANNEL;
 
 //输入特征图按通道数，按每个通道不同的地址进行读取
 wire [`DataBus] input_bytes_per_channel;
@@ -152,16 +152,16 @@ always @(posedge clk or negedge rst_n) begin
         input_done <= 1'b0;
     end
     else if (addr_init || input_addr_begin) begin
-        input_addr <= input_base_addr;
+        input_addr <= current_input_base;
         input_cnt  <= '0;
-        input_done <= (input_base_addr >= input_end_addr);
+        input_done <= (current_input_base >= current_input_end);
     end
     else if (bram_rd_en && (rd_sel == RD_INPUT) && !input_done) begin
         // 当前input_addr对应的读请求已经发出
         input_cnt <= input_cnt + 32'd1;
 
         // 当前是不是最后一个32位字
-        if ((input_addr + 32'd4) >= input_end_addr) begin
+        if ((input_addr + 32'd4) >= current_input_end) begin
             input_done <= 1'b1;
         end
         else begin
