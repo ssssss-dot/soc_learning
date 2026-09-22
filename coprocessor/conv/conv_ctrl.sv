@@ -84,7 +84,7 @@ module conv_ctrl(
 
     //表示当前哪个地址可以开始增加
     output reg weight_addr_begin,
-    output reg input_addr_begin,
+    output reg input_addr_begin,//看输入通道增加缓存地址
     output reg bias_addr_begin,
 
     //给im2col的开始脉冲信号
@@ -136,7 +136,8 @@ always @(*)begin
             end
         end
         READ_INPUT:begin
-            if(input_cache_loaded_done_i)begin
+            //一个通道的加载完成，同时下一个输入通道的begin不能开始
+            if(input_cache_loaded_done_i && !input_addr_begin)begin
                 next_state = WAIT_CHANNEL;
             end
         end
@@ -218,7 +219,7 @@ always @(posedge clk or negedge rst_n)begin
             rd_req <= !input_done_i;
             rd_sel <= RD_INPUT;
             //输入数据已经加载完成，开始进行im2col
-            if (input_cache_loaded_done_i)begin
+            if (input_cache_loaded_done_i && !input_addr_begin)begin
                 im2col_start <= 1'b1;
             end
         end

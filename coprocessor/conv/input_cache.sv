@@ -80,14 +80,17 @@ always @(posedge clk or negedge rst_n) begin
         cache_wr_ptr <= 'd0;
         input_cache_loaded_done_o <= 'd0;
     end
-    else if (wr_en && !input_cache_loaded_done_o) begin
-        if (cache_wr_ptr != input_last_word_addr_i)begin
-            cache_wr_ptr <= cache_wr_ptr + 1'b1;
+    else begin
+        if (wr_en && !input_cache_loaded_done_o) begin
             input_cache_loaded_done_o <= 'd0;
-        end
-        else begin
-            input_cache_loaded_done_o <= 'd1;
-            cache_wr_ptr <= 'd0;
+            if (cache_wr_ptr != input_last_word_addr_i)begin
+                cache_wr_ptr <= cache_wr_ptr + 1'b1;
+                input_cache_loaded_done_o <= 'd0;
+            end
+            else begin
+                input_cache_loaded_done_o <= 'd1;
+                cache_wr_ptr <= 'd0;
+            end
         end
     end
 end
