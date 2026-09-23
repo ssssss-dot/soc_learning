@@ -140,6 +140,20 @@ set rtl_files [list \
     "axi/axi_crossbar/wr/taxi_axi_crossbar_wr.sv" \
     "axi/axi_crossbar/taxi_axi_crossbar_3s.sv" \
     "coprocessor/bram_for_acc.sv" \
+    "coprocessor/pe_ws.sv" \
+    "coprocessor/conv/conv_reg.sv" \
+    "coprocessor/conv/conv_ctrl.sv" \
+    "coprocessor/conv/addr_gen.sv" \
+    "coprocessor/conv/read_arbiter.sv" \
+    "coprocessor/conv/weight_cache.sv" \
+    "coprocessor/conv/input_cache.sv" \
+    "coprocessor/conv/im2col.sv" \
+    "coprocessor/conv/pe_array.sv" \
+    "coprocessor/conv/result_ram_bank.sv" \
+    "coprocessor/conv/accumulation.sv" \
+    "coprocessor/conv/int32_int8.sv" \
+    "coprocessor/conv/output_cache.sv" \
+    "coprocessor/conv/conv_top.sv" \
     "dma/dma_ctrl.sv" \
     "dma/taxi_axi_dma_rd.sv" \
     "dma/taxi_axi_dma_wr.sv" \

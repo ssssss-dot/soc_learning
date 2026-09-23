@@ -7,6 +7,16 @@ module dma_subsystem_top(
     // High while the accelerator owns the shared BRAM.
     input                     acc_bram_blocked,
 
+    // Accelerator access to the shared BRAM.
+    input                     acc_rd_en,
+    input  [13:0]             acc_rd_addr,
+    output [31:0]             acc_rd_data,
+    output                    acc_rd_valid,
+    input                     acc_wr_en,
+    input  [13:0]             acc_wr_addr,
+    input  [31:0]             acc_wr_data,
+    input  [3:0]              acc_wr_strb,
+
     // MMIO router <-> DMA ctrl native request/response
     output                    dma_req_ready,
     input                     dma_req_valid,
@@ -187,29 +197,38 @@ bram_for_acc bram_for_acc_inst(
     .clk(clk),
     .rst_n(rst_n),
 
-    .data_i(rd_axis_if.tdata),
-    .last_i(rd_axis_if.tlast),
-    .keep_i(rd_axis_if.tkeep),
-    .ready_i(rd_axis_if.tready),
-    .valid_i(rd_axis_if.tvalid),
+    .data_i_dma(rd_axis_if.tdata),
+    .last_i_dma(rd_axis_if.tlast),
+    .keep_i_dma(rd_axis_if.tkeep),
+    .ready_i_dma(rd_axis_if.tready),
+    .valid_i_dma(rd_axis_if.tvalid),
 
-    .data_o(wr_axis_if.tdata),
-    .last_o(wr_axis_if.tlast),
-    .valid_o(wr_axis_if.tvalid),
-    .ready_o(wr_axis_if.tready),
-    .keep_o(wr_axis_if.tkeep),
+    .data_o_dma(wr_axis_if.tdata),
+    .last_o_dma(wr_axis_if.tlast),
+    .valid_o_dma(wr_axis_if.tvalid),
+    .ready_o_dma(wr_axis_if.tready),
+    .keep_o_dma(wr_axis_if.tkeep),
 
-    .ram2ddr_len(ctrl_wr_desc_len),
-    .ctrl_wr_desc_valid(ctrl_wr_desc_valid),
-    .ctrl_wr_desc_ready(ctrl_wr_desc_ready),
+    .ram2ddr_len_dma(ctrl_wr_desc_len),
+    .ctrl_wr_desc_valid_dma(ctrl_wr_desc_valid),
+    .ctrl_wr_desc_ready_dma(ctrl_wr_desc_ready),
 
-    .ctrl_rd_desc_valid(ctrl_rd_desc_valid),
-    .ctrl_rd_desc_ready(ctrl_rd_desc_ready),
+    .ctrl_rd_desc_valid_dma(ctrl_rd_desc_valid),
+    .ctrl_rd_desc_ready_dma(ctrl_rd_desc_ready),
 
-    .write_blocked(acc_bram_blocked),
+    .write_blocked_dma(acc_bram_blocked),
 
-    .rd_bram_offset(rd_bram_offset_active),
-    .wr_bram_offset(wr_bram_offset_active)
+    .rd_bram_offset_dma(rd_bram_offset_active),
+    .wr_bram_offset_dma(wr_bram_offset_active),
+
+    .acc_rd_en(acc_rd_en),
+    .acc_rd_addr(acc_rd_addr),
+    .acc_rd_data(acc_rd_data),
+    .acc_rd_valid(acc_rd_valid),
+    .acc_wr_en(acc_wr_en),
+    .acc_wr_addr(acc_wr_addr),
+    .acc_wr_data(acc_wr_data),
+    .acc_wr_strb(acc_wr_strb)
 );
 
 endmodule

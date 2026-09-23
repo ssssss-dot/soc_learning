@@ -23,6 +23,7 @@ module testbench_conv;
     logic        conv_we;
     wire [31:0]  conv_rdata;
     wire         conv_irq;
+    wire         conv_busy;
 
     // Shared BRAM interface
     wire         acc_rd_en;
@@ -48,6 +49,7 @@ module testbench_conv;
         .conv_we(conv_we),
         .conv_rdata(conv_rdata),
         .conv_irq(conv_irq),
+        .conv_busy(conv_busy),
         .acc_rd_en(acc_rd_en),
         .acc_rd_addr(acc_rd_addr),
         .acc_rd_data(acc_rd_data),

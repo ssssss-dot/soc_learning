@@ -14,6 +14,7 @@ module conv_top (
     input  wire        conv_we,
     output wire [31:0] conv_rdata,
     output wire        conv_irq,
+    output wire        conv_busy,
 
     output wire        acc_rd_en,
     output wire [13:0] acc_rd_addr,
@@ -63,6 +64,8 @@ wire [31:0] accum_result;
 wire accum_result_valid, bias_loaded_done;
 wire signed [7:0] quant_data;
 wire quant_valid;
+
+assign conv_busy = busy;
 
 conv_reg u_conv_reg (
     .clk(clk),

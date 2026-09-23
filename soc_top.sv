@@ -394,9 +394,37 @@ wire dma_irq;//dma中断拉高信号
 wire dma_wr_done_pulse;//只给DCache失效使用，不受CPU/DMA中断屏蔽影响
 wire [15:0] rd_bram_offset_active;
 wire [15:0] wr_bram_offset_active;
-// 加速器尚未接入；BRAM回环测试阶段由DMA独占共享BRAM。
+
+// MMIO router -> Conv configuration registers
+wire conv_req_ready;
+wire conv_req_valid;
+wire conv_rsp_valid;
+wire conv_rsp_ready;
+wire [`DataBus] conv_wdata;
+wire [`DataAddrBus] conv_addr;
+wire [3:0] conv_wstrb;
+wire conv_we;
+wire [`DataBus] conv_rdata;
+wire conv_irq;
+wire conv_busy;
+
+// Conv <-> shared accelerator BRAM
+wire acc_rd_en;
+wire [13:0] acc_rd_addr;
+wire [31:0] acc_rd_data;
+wire acc_rd_valid;
+wire acc_wr_en;
+wire [13:0] acc_wr_addr;
+wire [31:0] acc_wr_data;
+wire [3:0] acc_wr_strb;
+
+// DMA and Conv share the CPU machine-external interrupt input.
+wire accelerator_irq;
+assign accelerator_irq = dma_irq | conv_irq;
+
+// Block DMA writes into the shared BRAM while Conv owns it.
 wire acc_bram_blocked;
-assign acc_bram_blocked = 1'b0;
+assign acc_bram_blocked = conv_busy;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -763,7 +791,7 @@ ex_stage u_ex_stage(
 
     .ex_req_o(ex_req),
 
-    .dma_irq_i(dma_irq),
+    .dma_irq_i(accelerator_irq),
     .trap_enter_i(trap_enter),
     .trap_pc_i(trap_pc),
 
@@ -1124,7 +1152,17 @@ mmio_router u_mmio_router (
     .dma_wdata         (dma_wdata),
     .dma_wstrb         (dma_wstrb),
     .dma_we            (dma_we),
-    .dma_rdata         (dma_rdata)
+    .dma_rdata         (dma_rdata),
+
+    .conv_req_ready    (conv_req_ready),
+    .conv_req_valid    (conv_req_valid),
+    .conv_rsp_valid    (conv_rsp_valid),
+    .conv_rsp_ready    (conv_rsp_ready),
+    .conv_wdata        (conv_wdata),
+    .conv_addr         (conv_addr),
+    .conv_wstrb        (conv_wstrb),
+    .conv_we           (conv_we),
+    .conv_rdata        (conv_rdata)
 );
 
 // 关闭s_axi[0]未使用的写通道；ICache只会发起AXI读事务。
@@ -1456,12 +1494,49 @@ axi2native_uart u_axi2native_uart(
 assign m_axi[0].buser = '0;
 assign m_axi[0].ruser = '0;
 
+// Conv accelerator
+conv_top u_conv_top(
+    .clk(clk),
+    .rst_n(cpu_rst_n),
+
+    .conv_req_valid(conv_req_valid),
+    .conv_req_ready(conv_req_ready),
+    .conv_rsp_valid(conv_rsp_valid),
+    .conv_rsp_ready(conv_rsp_ready),
+    .conv_wdata(conv_wdata),
+    .conv_addr(conv_addr),
+    .conv_wstrb(conv_wstrb),
+    .conv_we(conv_we),
+    .conv_rdata(conv_rdata),
+    .conv_irq(conv_irq),
+    .conv_busy(conv_busy),
+
+    .acc_rd_en(acc_rd_en),
+    .acc_rd_addr(acc_rd_addr),
+    .acc_rd_data(acc_rd_data),
+    .acc_rd_valid(acc_rd_valid),
+    .acc_wr_en(acc_wr_en),
+    .acc_wr_addr(acc_wr_addr),
+    .acc_wr_data(acc_wr_data),
+    .acc_wr_strb(acc_wr_strb)
+);
+
 //dma子系统例化
 dma_subsystem_top u_dma_subsystem_top(
     .clk(clk),
     .rst_n(cpu_rst_n),
 
     .acc_bram_blocked(acc_bram_blocked),
+
+    // Conv access to the shared BRAM
+    .acc_rd_en(acc_rd_en),
+    .acc_rd_addr(acc_rd_addr),
+    .acc_rd_data(acc_rd_data),
+    .acc_rd_valid(acc_rd_valid),
+    .acc_wr_en(acc_wr_en),
+    .acc_wr_addr(acc_wr_addr),
+    .acc_wr_data(acc_wr_data),
+    .acc_wr_strb(acc_wr_strb),
 
     // MMIO router <-> DMA ctrl
     .dma_req_ready(dma_req_ready),

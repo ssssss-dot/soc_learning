@@ -30,7 +30,7 @@ module accumulation(
     input wire                   bias_data_valid_i,
 
     // 给 conv_ctrl
-    output reg channel_done_o,
+    output reg channel_done_o,//当前一个输入通道产生的所有 PE 结果，都已经写入累加 RAM
     output reg bias_loaded_done_o,
 
     output reg [`DataBus] result_o,//加了偏置的int32输出
