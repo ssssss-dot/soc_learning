@@ -40,29 +40,30 @@ always @ (posedge clk or negedge rst_n) begin
     end
 end
 
-//r1
-always @ (*) begin
-	if (!rst_n) begin
-		rdata1 <= `ZeroWord;
-	end 
-    else if (re1 && raddr1 == waddr && we)//如果要读的地址正好是要写的，就直接把写数据给读的数据
-	   rdata1 <= wdata;
-	else if (re1)
-		rdata1 <= regs[raddr1];
-	else
-		rdata1 <= `ZeroWord;
+//读端口1
+always @(*) begin
+    if (!rst_n || !re1 || (raddr1 == 5'd0)) begin
+        rdata1 = `ZeroWord;
+    end
+    else if (we && (raddr1 == waddr)) begin
+        rdata1 = wdata;
+    end
+    else begin
+        rdata1 = regs[raddr1];
+    end
 end
 
-//r2
-always @ (*) begin
-	if (!rst_n) begin
-		rdata2 <= `ZeroWord;
-	end else if (re2 && raddr2 == waddr && we)
-		rdata2 <= wdata;
-	else if (re2)
-		rdata2 <= regs[raddr2];
-	else
-		rdata2 <= `ZeroWord;
+//读端口2
+always @(*) begin
+    if (!rst_n || !re2 || (raddr2 == 5'd0)) begin
+        rdata2 = `ZeroWord;
+    end
+    else if (we && (raddr2 == waddr)) begin
+        rdata2 = wdata;
+    end
+    else begin
+        rdata2 = regs[raddr2];
+    end
 end
 
 endmodule
