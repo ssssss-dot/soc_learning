@@ -331,8 +331,28 @@
 `define CONV_INPUT_BASE_ADDR  (`CONV_BASE_ADDR + 32'h1C)// 输入特征图在BRAM中的字节基地址
 `define CONV_WEIGHT_BASE_ADDR (`CONV_BASE_ADDR + 32'h20)// 权重在BRAM中的字节基地址
 
+// FC配置寄存器：CPU MMIO字节地址，每个寄存器占4字节
+// 以下定义仅分配寄存器地址，读写行为由FC寄存器模块实现。
+// CONTROL：[0]start写1启动并自清；[1]irq_enable中断使能；[2]relu_enable；[3]bias_enable
+//          [4]output_int32：0=量化输出INT8，1=输出加bias后的INT32（绕过量化和ReLU）；[31:5]保留
+`define FC_CONTROL_ADDR      (`FC_BASE_ADDR + 32'h00)// 启动和功能控制，busy期间不接受重复启动
+`define FC_STATUS_ADDR       (`FC_BASE_ADDR + 32'h04)// [0]busy只读；[1]done、[2]error写1清除；[31:3]保留
+`define FC_IN_FEATURES_ADDR  (`FC_BASE_ADDR + 32'h08)// 输入元素数量：FC1=400、FC2=120、FC3=84
+`define FC_OUT_FEATURES_ADDR (`FC_BASE_ADDR + 32'h0C)// 输出元素数量：FC1=120、FC2=84、FC3=10
+// BASE寄存器内容统一为共享BRAM内的字节偏移（不是DDR地址），要求4字节对齐。
+// 注意：FC_BIAS_BASE使用字节地址，与CONV_BIAS_BASE的字地址约定不同。
+`define FC_INPUT_BASE_ADDR   (`FC_BASE_ADDR + 32'h10)// INT8输入向量起始字节地址，容量为IN_FEATURES字节
+`define FC_WEIGHT_BASE_ADDR  (`FC_BASE_ADDR + 32'h14)// INT8权重起始字节地址，按[输出][输入]排列，容量为OUT_FEATURES*IN_FEATURES字节
+`define FC_BIAS_BASE_ADDR    (`FC_BASE_ADDR + 32'h18)// INT32 bias起始字节地址，每个输出一个bias，尺度与输入*权重的累加尺度一致
+`define FC_OUTPUT_BASE_ADDR  (`FC_BASE_ADDR + 32'h1C)// 输出起始字节地址，INT8占OUT_FEATURES字节，INT32占OUT_FEATURES*4字节
+`define FC_QUANT_MULT_ADDR   (`FC_BASE_ADDR + 32'h20)// 32位无符号量化整数乘数，INT32直出模式下不使用
+`define FC_QUANT_SHIFT_ADDR  (`FC_BASE_ADDR + 32'h24)// [5:0]量化右移位数；[31:6]保留；INT32直出模式下不使用
+
 //加速器共享64KB的ram
 `define RAM_SIZE 0:16383
 //ram地址分配
+
+//fc的pe个数
+`define FC_PE_NUMBER 16
 
 `endif

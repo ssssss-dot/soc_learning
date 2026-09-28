@@ -35,7 +35,7 @@ always @(posedge clk or negedge rst_n)begin
         en_o <= 'd0;
         last_o <= 'd0;
     end
-    else if(valid_i) begin
+    else if(en_i) begin
         en_o <= en_i;
         last_o <= last_i;
     end
@@ -58,9 +58,6 @@ always @(posedge clk or negedge rst_n)begin
         else if (valid_i) begin
             acc_reg <= acc_reg + product_ext;
         end
-    end
-    else begin
-        valid_o <= 'd0;
     end
 end
 

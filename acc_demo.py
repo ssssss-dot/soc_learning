@@ -143,6 +143,15 @@ def export_for_soc(net, test_iter, out_dir="soc_export_int8"):
             "kernel_index": "kernel_y * kernel_width + kernel_x",
             "padding": "输出通道不足16时，高编号PE行的权重补0。",
             "address_formula": "((input_channel * kernel_elements + kernel_index) * 16 + pe_row) bytes"
+        },
+        "_fc_weight_layout": {
+            "layout": "[output_group][input_index][pe_col]",
+            "pe_cols": 16,
+            "output_index": "output_group * 16 + pe_col",
+            "padding": "最后一组不足16个输出时，剩余列权重补0；硬件不写回这些列的结果。bias不补齐。",
+            "address_formula": "((output_group * in_features + input_index) * 16 + pe_col) bytes",
+            "stream_note": "连续16字节组成一组权重向量；各列0~15次阵列推进的错拍延迟由硬件实现，文件不插入时序空拍。",
+            "layers": {}
         }
     }
 
@@ -204,6 +213,50 @@ def export_for_soc(net, test_iter, out_dir="soc_export_int8"):
 
         weight_pe.tofile(out / f"{name}.bin")
         scales[name] = float(scale)
+        return float(scale)
+
+    # FC原始权重为[输出神经元][输入特征]。先把输出数补齐到16的倍数，
+    # 再分组并转置为[输出分组][输入特征][16个PE列]。
+    # 同一个输入特征对应的16个权重连续保存，4次32位读返回即可拼齐。
+    def save_fc_weight_int8(name, tensor, pe_cols=16, scale=None):
+        data = tensor.detach().cpu().float().numpy()
+
+        if data.ndim != 2:
+            raise ValueError(
+                f"{name}必须是[out_features][in_features]二维FC权重，"
+                f"实际形状为{data.shape}"
+            )
+
+        if scale is None:
+            scale = get_int8_scale(tensor)
+
+        # 与原save_int8使用相同量化方法，仅改变量化后的存储顺序。
+        data_int8 = np.clip(
+            np.rint(data / scale), -127, 127
+        ).astype(np.int8)
+
+        out_features, in_features = data_int8.shape
+        output_groups = (out_features + pe_cols - 1) // pe_cols
+        padded_out_features = output_groups * pe_cols
+        padded = np.zeros(
+            (padded_out_features, in_features), dtype=np.int8
+        )
+        padded[:out_features, :] = data_int8
+
+        # [组][列][输入] -> [组][输入][列]，最内层列索引在文件中连续。
+        weight_pe = np.ascontiguousarray(
+            padded.reshape(output_groups, pe_cols, in_features).transpose(0, 2, 1)
+        )
+        weight_pe.tofile(out / f"{name}.bin")
+        scales[name] = float(scale)
+        scales["_fc_weight_layout"]["layers"][name] = {
+            "out_features": int(out_features),
+            "in_features": int(in_features),
+            "output_groups": int(output_groups),
+            "padded_out_features": int(padded_out_features),
+            "shape": list(weight_pe.shape),
+            "size_bytes": int(weight_pe.nbytes)
+        }
         return float(scale)
 
     # 偏置必须与PE的INT32累加结果使用相同尺度：
@@ -284,7 +337,7 @@ def export_for_soc(net, test_iter, out_dir="soc_export_int8"):
                 f"{layer_name}_weight", layer.weight
             )
         else:
-            weight_scale = save_int8(
+            weight_scale = save_fc_weight_int8(
                 f"{layer_name}_weight", layer.weight
             )
         bias_scale = save_bias_int32(

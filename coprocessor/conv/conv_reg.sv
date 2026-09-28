@@ -180,6 +180,16 @@ always @(posedge clk or negedge rst_n) begin
             IDLE: begin
                 if (conv_req_valid && conv_we) begin
                     case ({conv_addr[31:2], 2'b00})
+                        `CONV_STATUS_ADDR:begin
+                            if(conv_wstrb[0])begin
+                                if(conv_wdata[1] && !done)begin
+                                    done_q <= 'd0;
+                                end
+                                if(conv_wdata[2] && !error)begin
+                                    error_q <= 'd0;
+                                end                                
+                            end
+                        end
                         `CONV_CONTROL_ADDR: begin
                             if (conv_wstrb[0])
                                 conv_control_reg[1:0] <= conv_wdata[1:0];

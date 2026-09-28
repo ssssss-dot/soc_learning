@@ -39,13 +39,27 @@ module mmio_router(
     input conv_rsp_valid,
     output conv_rsp_ready,
 
-    //dmawe
+    //convwe
     output [`DataBus] conv_wdata,
     output [`DataAddrBus] conv_addr,
     output [3:0] conv_wstrb,
     output conv_we,
 
-    input  [`DataBus] conv_rdata
+    input  [`DataBus] conv_rdata,
+
+    //fc配置信号
+    input fc_req_ready,
+    output fc_req_valid,
+    input fc_rsp_valid,
+    output fc_rsp_ready,
+
+    //fcwe
+    output [`DataBus] fc_wdata,
+    output [`DataAddrBus] fc_addr,
+    output [3:0] fc_wstrb,
+    output fc_we,
+
+    input  [`DataBus] fc_rdata
 
 );
 
@@ -77,11 +91,18 @@ assign mmio_req_ready = (state == IDLE);
 assign dma_req_valid  = (state == REQ_W) && dma_hit_q;
 assign mmio_rsp_valid = (state == RSP) && 
                         ((dma_hit_q ? dma_rsp_valid : 'd0) 
-                        || (conv_hit_q ? conv_rsp_valid : 'd0));
+                        || (conv_hit_q ? conv_rsp_valid : 'd0)
+                        || (fc_hit_q ? fc_rsp_valid : 'd0));
 assign dma_rsp_ready  = (state == RSP) && mmio_rsp_ready && dma_hit_q;
-assign mmio_rsp_rdata = dma_hit_q ? (we_q ? 'd0 : dma_rdata) : (conv_hit_q ? (we_q ?  'd0: conv_rdata) : 'd0);
+// 使用锁存的目标选择读响应，写请求返回零。
+assign mmio_rsp_rdata = dma_hit_q  ? (we_q ? 'd0 : dma_rdata) :
+                        conv_hit_q ? (we_q ? 'd0 : conv_rdata) :
+                        fc_hit_q   ? (we_q ? 'd0 : fc_rdata) : 'd0;
 assign conv_req_valid = (state == REQ_W) && conv_hit_q;
 assign conv_rsp_ready = (state == RSP) && mmio_rsp_ready && conv_hit_q;
+// FC与Conv采用相同握手：仅选中的从机收到请求和响应ready。
+assign fc_req_valid = (state == REQ_W) && fc_hit_q;
+assign fc_rsp_ready = (state == RSP) && mmio_rsp_ready && fc_hit_q;
 
 assign dma_addr = dma_hit_q ? addr_q : 'd0;
 assign dma_we = dma_hit_q ? we_q : 'd0;
@@ -92,6 +113,12 @@ assign conv_addr = conv_hit_q ? addr_q : 'd0;
 assign conv_we = conv_hit_q ? we_q : 'd0;
 assign conv_wstrb =  conv_hit_q ? (we_q ? wstrb_q : 'd0) : 'd0;
 assign conv_wdata =  conv_hit_q ? (we_q ? wdata_q : 'd0) : 'd0;
+
+// FC请求使用已锁存的地址和写数据，等待握手期间保持稳定。
+assign fc_addr = fc_hit_q ? addr_q : 'd0;
+assign fc_we = fc_hit_q ? we_q : 'd0;
+assign fc_wstrb = fc_hit_q ? (we_q ? wstrb_q : 'd0) : 'd0;
+assign fc_wdata = fc_hit_q ? (we_q ? wdata_q : 'd0) : 'd0;
 
 always @(posedge clk or negedge rst_n) begin 
     if(!rst_n)begin
@@ -113,13 +140,17 @@ always @(*) begin
         end
 
         REQ_W:begin
-            if((dma_req_valid && dma_req_ready) || (conv_req_valid && conv_req_ready))begin
+            if((dma_req_valid && dma_req_ready) ||
+               (conv_req_valid && conv_req_ready) ||
+               (fc_req_valid && fc_req_ready))begin
                 next_state = RSP;
             end
         end
 
         RSP:begin
-            if(((dma_rsp_valid && dma_rsp_ready) || (conv_rsp_valid && conv_rsp_ready) ) && mmio_rsp_valid && mmio_rsp_ready) begin
+            if(((dma_rsp_valid && dma_rsp_ready) ||
+                (conv_rsp_valid && conv_rsp_ready) ||
+                (fc_rsp_valid && fc_rsp_ready)) && mmio_rsp_valid && mmio_rsp_ready) begin
                 next_state = IDLE;
             end
         end
