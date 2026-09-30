@@ -344,7 +344,7 @@
 `define FC_INPUT_BASE_ADDR   (`FC_BASE_ADDR + 32'h10)// INT8输入向量起始字节地址，容量为IN_FEATURES字节
 `define FC_WEIGHT_BASE_ADDR  (`FC_BASE_ADDR + 32'h14)// INT8权重起始字节地址，按[输出][输入]排列，容量为OUT_FEATURES*IN_FEATURES字节
 `define FC_BIAS_BASE_ADDR    (`FC_BASE_ADDR + 32'h18)// INT32 bias起始字节地址，每个输出一个bias，尺度与输入*权重的累加尺度一致
-`define FC_OUTPUT_BASE_ADDR  (`FC_BASE_ADDR + 32'h1C)// 输出起始字节地址，INT8占OUT_FEATURES字节，INT32占OUT_FEATURES*4字节
+// 偏移0x1C保留：读返回0、写忽略。整层输出固定从共享BRAM字节地址0开始，各组连续存放。
 `define FC_QUANT_MULT_ADDR   (`FC_BASE_ADDR + 32'h20)// 32位无符号量化整数乘数，INT32直出模式下不使用
 `define FC_QUANT_SHIFT_ADDR  (`FC_BASE_ADDR + 32'h24)// [5:0]量化右移位数；[31:6]保留；INT32直出模式下不使用
 

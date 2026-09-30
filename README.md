@@ -206,7 +206,7 @@ FC 基址 `0x4000_7000`，当前定义的寄存器偏移为：
 | `0x10` | `FC_INPUT_BASE_ADDR` | 输入字节基址 |
 | `0x14` | `FC_WEIGHT_BASE_ADDR` | `[输出][输入]` 权重字节基址 |
 | `0x18` | `FC_BIAS_BASE_ADDR` | INT32 bias 字节基址，与 Conv 的字地址约定不同 |
-| `0x1C` | `FC_OUTPUT_BASE_ADDR` | 输出字节基址 |
+| `0x1C` | 保留 | 读返回0、写忽略；整层输出固定从共享BRAM字节地址0开始，各组连续存放 |
 | `0x20` | `FC_QUANT_MULT_ADDR` | 量化乘数 |
 | `0x24` | `FC_QUANT_SHIFT_ADDR` | 量化右移位数 |
 

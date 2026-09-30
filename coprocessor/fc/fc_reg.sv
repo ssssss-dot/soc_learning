@@ -1,5 +1,6 @@
 `include "define.sv"
 
+// 输出起始地址固定为共享BRAM字节地址0，不提供输出基地址寄存器。
 module fc_reg(
     input clk,
     input rst_n,
@@ -26,7 +27,6 @@ module fc_reg(
     output reg [`DataBus] fc_input_base_addr,//输入特征图基地址
     output reg [`DataBus] fc_weight_base_addr,//输入权重基地址
     output [`DataBus] fc_bias_base_addr,//输入偏置基地址
-    output reg [`DataBus] fc_output_base_addr,//输出图像基地址
     //量化数据
     output [`DataBus] fc_quant_mult,
     output [5:0] fc_quant_shift,
@@ -65,7 +65,6 @@ assign fc_quant_shift     = fc_quant_shift_reg[5:0];
 
 assign fc_start           = fc_ctrl_reg[0];
 assign fc_relu_enable     = fc_ctrl_reg[2];
-
 //中断信号赋值
 assign fc_status_reg = {
     29'd0,
@@ -124,7 +123,6 @@ always @(posedge clk or negedge rst_n) begin
         fc_input_base_addr_reg <= 'd0;
         fc_weight_base_addr <= 'd0;
         fc_bias_base_addr <= 'd0;
-        fc_output_base_addr <= 'd0;
         fc_quant_mult_reg <= 'd0;
         fc_quant_shift_reg <= 'd0;
         done_q <= 1'b0;
@@ -210,16 +208,6 @@ always @(posedge clk or negedge rst_n) begin
                             if (fc_wstrb[3])
                                 fc_bias_base_addr[31:24] <= fc_wdata[31:24];
                         end
-                        `FC_OUTPUT_BASE_ADDR: begin
-                            if (fc_wstrb[0])
-                                fc_output_base_addr[7:0] <= fc_wdata[7:0];
-                            if (fc_wstrb[1])
-                                fc_output_base_addr[15:8] <= fc_wdata[15:8];
-                            if (fc_wstrb[2])
-                                fc_output_base_addr[23:16] <= fc_wdata[23:16];
-                            if (fc_wstrb[3])
-                                fc_output_base_addr[31:24] <= fc_wdata[31:24];
-                        end
                         `FC_QUANT_MULT_ADDR: begin
                             if (fc_wstrb[0])
                                 fc_quant_mult_reg[7:0] <= fc_wdata[7:0];
@@ -248,7 +236,6 @@ always @(posedge clk or negedge rst_n) begin
                         `FC_INPUT_BASE_ADDR:    fc_rdata <= fc_input_base_addr_reg;
                         `FC_WEIGHT_BASE_ADDR:   fc_rdata <= fc_weight_base_addr;
                         `FC_BIAS_BASE_ADDR:     fc_rdata <= fc_bias_base_addr;
-                        `FC_OUTPUT_BASE_ADDR:   fc_rdata <= fc_output_base_addr;
                         `FC_QUANT_MULT_ADDR:    fc_rdata <= fc_quant_mult_reg;
                         `FC_QUANT_SHIFT_ADDR:   fc_rdata <= fc_quant_shift_reg;
                         default: fc_rdata <= 'd0;

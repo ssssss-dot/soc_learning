@@ -7,32 +7,32 @@ module bram_arbiter(
     //bram接口
     output reg          acc_rd_en,
     output reg  [13:0]  acc_rd_addr,
-    input       [31:0]  acc_rd_data,
+    input       [`DataBus]  acc_rd_data,
     input               acc_rd_valid,
 
     output reg          acc_wr_en,
     output reg  [13:0]  acc_wr_addr,
-    output reg  [31:0]  acc_wr_data,
+    output reg  [`DataBus]  acc_wr_data,
     output reg  [3:0]   acc_wr_strb,
 
     //conv接口
     input wire         acc_conv_rd_en,
     input wire  [13:0]  acc_conv_rd_addr,
-    output reg  [31:0]  acc_conv_rd_data,
+    output reg  [`DataBus]  acc_conv_rd_data,
     output reg         acc_conv_rd_valid,
     input wire         acc_conv_wr_en,
     input wire  [13:0]  acc_conv_wr_addr,
-    input wire  [31:0]  acc_conv_wr_data,
+    input wire  [`DataBus]  acc_conv_wr_data,
     input wire  [3:0]   acc_conv_wr_strb,
 
     //fc接口
     input wire         acc_fc_rd_en,
     input wire  [13:0]  acc_fc_rd_addr,
-    output reg  [31:0]  acc_fc_rd_data,
+    output reg  [`DataBus]  acc_fc_rd_data,
     output reg         acc_fc_rd_valid,
     input wire         acc_fc_wr_en,
     input wire  [13:0]  acc_fc_wr_addr,
-    input wire  [31:0]  acc_fc_wr_data,
+    input wire  [`DataBus]  acc_fc_wr_data,
     input wire  [3:0]   acc_fc_wr_strb,
 
     //脉冲启动信号

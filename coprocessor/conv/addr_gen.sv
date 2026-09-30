@@ -39,11 +39,7 @@ module addr_gen(
     output reg bias_done
 );
 
-//三个计数器，一次读bram加一次
-reg [`DataBus] bias_cnt;
-reg [`DataBus] weight_cnt;
-reg [`DataBus] input_cnt;
-
+//内部地址寄存器
 reg [`DataBus] input_addr;
 reg [`DataBus] weight_addr;
 reg [13:0] bias_addr;
@@ -85,16 +81,13 @@ assign current_input_end =
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         bias_addr <= '0;
-        bias_cnt  <= '0;
         bias_done <= 1'b0;
     end
     else if (addr_init || bias_addr_begin) begin
         bias_addr <= bias_base_addr;
-        bias_cnt  <= '0;
         bias_done <= ({18'd0, bias_base_addr} >= bias_end_addr);
     end
     else if (bram_rd_en && (rd_sel == RD_BIAS) && !bias_done) begin
-        bias_cnt <= bias_cnt + 32'd1;
 
         if (({18'd0, bias_addr} + 32'd1) >= bias_end_addr) begin
             bias_done <= 1'b1;
@@ -110,18 +103,15 @@ end
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         weight_addr <= '0;
-        weight_cnt  <= '0;
         weight_done <= 1'b0;
     end
     else if (addr_init) begin
         weight_addr <= weight_base_addr;
-        weight_cnt  <= '0;
         weight_done <= 1'b0;
     end
     else if (weight_addr_begin) begin
         // 每次进入READ_WEIGHT，根据当前输入通道重新定位
         weight_addr <= current_weight_base;
-        weight_cnt  <= '0;
 
         // 防止channel_cnt越界
         weight_done <= (current_weight_base >= weight_end_addr);
@@ -129,9 +119,6 @@ always @(posedge clk or negedge rst_n) begin
     else if (bram_rd_en &&
              (rd_sel == RD_WEIGHT) &&
              !weight_done) begin
-
-        // 记录已发出的32位BRAM读取次数
-        weight_cnt <= weight_cnt + 32'd1;
 
         // current_weight_end是当前输入通道的结束地址
         if ((weight_addr + 32'd4) >= current_weight_end) begin
@@ -148,18 +135,13 @@ end
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         input_addr <= '0;
-        input_cnt  <= '0;
         input_done <= 1'b0;
     end
     else if (addr_init || input_addr_begin) begin
         input_addr <= current_input_base;
-        input_cnt  <= '0;
         input_done <= (current_input_base >= current_input_end);
     end
     else if (bram_rd_en && (rd_sel == RD_INPUT) && !input_done) begin
-        // 当前input_addr对应的读请求已经发出
-        input_cnt <= input_cnt + 32'd1;
-
         // 当前是不是最后一个32位字
         if ((input_addr + 32'd4) >= current_input_end) begin
             input_done <= 1'b1;

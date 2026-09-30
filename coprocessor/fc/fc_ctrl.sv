@@ -1,5 +1,6 @@
 `include "define.sv"
 
+// 整层输出从共享BRAM字节地址0开始，各组结果依次连续存放。
 module fc_ctrl(
     input clk,
     input rst_n,
@@ -9,7 +10,6 @@ module fc_ctrl(
     input [`DataBus] fc_input_base_addr_i,//输入特征图基地址
     input [`DataBus] fc_weight_base_addr_i,//输入权重基地址
     input [`DataBus] fc_bias_base_addr_i,//输入偏置基地址
-    input [`DataBus] fc_output_base_addr_i,//输出图像基地址
     //量化数据
     input [`DataBus] fc_quant_mult_i,
     input [5:0] fc_quant_shift_i,
@@ -18,8 +18,12 @@ module fc_ctrl(
     output [`DataBus] fc_out_features_o,//输出特征数量
     output [`DataBus] fc_input_base_addr_o,//输入特征图基地址
     output [`DataBus] fc_weight_base_addr_o,//输入权重基地址
-    output [`DataBus] fc_bias_base_addr_o,//输入偏置基地址
-    output [`DataBus] fc_output_base_addr_o,//输出图像基地址
+    output [`DataBus] group_bias_base_addr,//输入偏置基地址
+    output [`DataBus] fc_weight_end_addr,
+    output [`DataBus] fc_input_end_addr,
+    output [`DataBus] group_bias_end_addr,
+    output [4:0] group_bias_count,//组内的bias个数
+
     //量化数据
     output [`DataBus] fc_quant_mult_o,
     output [5:0] fc_quant_shift_o, 
@@ -94,17 +98,17 @@ always @(*)begin
             next_state = INPUT_LOADING;
         end
         INPUT_LOADING:begin
-            if(input_loading_done)begin
+            if(input_loading_done && !input_addr_begin)begin//防止刚进入时，done信号是没被清除的旧值
                 next_state = BIAS_LOADING;
             end
         end
         BIAS_LOADING:begin
-            if(bias_loading_done)begin
+            if(bias_loading_done && !bias_addr_begin)begin
                 next_state = COMPUTING;
             end            
         end
         COMPUTING:begin
-            if(computing_done)begin
+            if(computing_done && !group_start)begin
                 next_state = DRAIN;
             end
         end
@@ -136,12 +140,10 @@ always @(posedge clk or negedge rst_n)begin
         done <= 'd0;
         error <= 'd0;
         addr_init <= 'd0;
-        group_start <= 'd0;
         rd_req <= 'd0;
         rd_sel <= 'd0;
     end
     else begin
-        group_start <= 'd0;
         done <= 'd0;
         error <= 'd0;
         addr_init <= 'd0;
@@ -153,7 +155,6 @@ always @(posedge clk or negedge rst_n)begin
                     done <= 'd0;
                     error <= 'd0;
                     addr_init <= 'd0;
-                    group_start <= 'd0;
                     rd_req <= 'd0;
                     rd_sel <= 'd0;
                 end
@@ -168,12 +169,17 @@ always @(posedge clk or negedge rst_n)begin
             end
             BIAS_LOADING:begin
                 rd_req <= 1'b1;
-                rd_sel <= BIAS_INPUT;
+                rd_sel <= RD_BIAS;
             end
             COMPUTING:begin
                 rd_req <= 1'b1;
-                rd_sel <= WEIGHT_INPUT;
-                if(computing_done)begin
+                rd_sel <= RD_WEIGHT;
+            end
+            DRAIN:begin
+                rd_req <= 1'b0;
+            end
+            WAIT_RESULT:begin
+                if(result_done)begin
                     if(group_cnt == ((fc_out_features_i - 1'b1) >> $clog2(`FC_PE_NUMBER)))begin
                         group_cnt <= 'd0;
                     end
@@ -181,10 +187,6 @@ always @(posedge clk or negedge rst_n)begin
                         group_cnt <= group_cnt + 1'b1;
                     end
                 end
-            end
-            DRAIN:begin
-            end
-            WAIT_RESULT:begin
             end
             DONE:begin
                 done <= 1'b1;
@@ -206,8 +208,6 @@ assign fc_in_features_o = fc_in_features_i;
 assign fc_out_features_o = fc_out_features_i;
 assign fc_input_base_addr_o = fc_input_base_addr_i;
 assign fc_weight_base_addr_o = fc_weight_base_addr_i;
-assign fc_bias_base_addr_o = fc_bias_base_addr_i;
-assign fc_output_base_addr_o = fc_output_base_addr_i;
 assign fc_quant_mult_o = fc_quant_mult_i;
 assign fc_quant_shift_o = fc_quant_shift_i;
 assign group_idx_o = group_cnt;
@@ -217,12 +217,14 @@ always @(posedge clk or negedge rst_n) begin
         weight_addr_begin <= 'd0;
         input_addr_begin <= 'd0;
         bias_addr_begin <= 'd0;
+        group_start <= 'd0;
     end
     else begin
         // 默认清零
         weight_addr_begin <= 'd0;
         input_addr_begin <= 'd0;
         bias_addr_begin <= 'd0;
+        group_start <= 'd0;
 
         // 进入INPUT_LOADING时拉高一拍
         if ((state != INPUT_LOADING) &&
@@ -236,8 +238,20 @@ always @(posedge clk or negedge rst_n) begin
         if ((state != COMPUTING) &&
             (next_state == COMPUTING)) begin
             weight_addr_begin <= 1'b1;
+            group_start <= 1'b1;//每次刚进computing的时候拉高一拍
         end
     end
 end
+
+wire last_group;
+
+//判断是不是最后一组
+assign last_group = (group_cnt == ((fc_out_features_i - 32'd1) >> 4));
+assign group_bias_count = (last_group && (fc_out_features_i[3:0] != 4'd0)) ? {1'b0 , fc_out_features_i[3:0]} : 5'd16;
+//结束地址计算
+assign fc_input_end_addr = fc_input_base_addr_i + fc_in_features_i;
+assign fc_weight_end_addr = fc_weight_base_addr_i + fc_out_features_i * fc_in_features_i;
+assign group_bias_end_addr = fc_bias_base_addr_i + ({29'd0, group_cnt} << 6) + ({27'd0, group_bias_count} << 2);
+assign group_bias_base_addr = fc_bias_base_addr_i + (group_cnt << 6);//bias一个32位，要多*4
 
 endmodule
