@@ -28,7 +28,7 @@ module addr_gen(
 
     input input_loading,
     input bias_loading,
-    input weight_loading,
+    input computing,
 
     //当前通道对应的数据地址读取完成
     output reg input_done,
@@ -123,7 +123,7 @@ always @(*) begin
         end
 
         RD_WEIGHT: begin
-            bram_rd_en = rd_req && !weight_done && weight_loading
+            bram_rd_en = rd_req && !weight_done && computing
                                && !addr_init && !weight_addr_begin;
             bram_rd_addr = weight_addr[15:2];
         end

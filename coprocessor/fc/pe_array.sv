@@ -6,7 +6,7 @@ module fc_pe_array(
 
     input signed [`ByteWidth] weight_i [0:15],
     input last_i,
-    input weight_valid_i [0:15],
+    input [15:0] weight_valid_i,
     input signed [`ByteWidth] features_i,//features从左侧流入，重复逻辑在input_cache里面
     input features_valid_i,
     input en_i,

@@ -36,7 +36,6 @@ module fc_ctrl(
 
     output input_loading,
     output bias_loading,
-    output weight_loading,
     output computing,
     output draining,
 
@@ -200,7 +199,6 @@ end
 
 assign input_loading = rst_n && (state == INPUT_LOADING);
 assign bias_loading  = rst_n && (state == BIAS_LOADING);
-assign weight_loading = rst_n && (state == COMPUTING);
 assign computing     = rst_n && (state == COMPUTING);
 assign draining      = rst_n && (state == DRAIN);
 
