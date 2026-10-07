@@ -15,7 +15,8 @@ module input_cache(
     input features_req_i,//拼好权重后指针才开始增加
     input [`DataBus] features_in_i,//输入总特征数
 
-    output reg input_done
+    output reg input_done,
+    output feature_last//給pe的是最后一个特征
 );
 
 
@@ -26,6 +27,17 @@ reg [6:0] wr_ptr;
 reg [6:0] rd_ptr;
 reg [1:0] offset;//读出时一拍只能读一个int8
 reg [1:0] offset_q;//offset锁存一拍对齐
+reg [6:0] rd_ptr_q;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        rd_ptr_q <= 7'd0;
+    else if (addr_init || group_start)
+        rd_ptr_q <= 7'd0;
+    else if (!input_data_valid && features_req_i &&
+             ({rd_ptr, offset} < features_in_i))
+        rd_ptr_q <= rd_ptr;
+end
 
 always @(posedge clk or negedge rst_n)begin
     if(!rst_n)begin
@@ -121,5 +133,7 @@ always @(*)begin
         end
     endcase
 end
+
+assign feature_last = features_valid_o && ({rd_ptr_q, offset_q} == features_in_i - 1'b1);
 
 endmodule

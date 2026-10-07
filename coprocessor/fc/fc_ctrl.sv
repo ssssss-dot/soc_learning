@@ -248,7 +248,8 @@ assign last_group = (group_cnt == ((fc_out_features_i - 32'd1) >> 4));
 assign group_bias_count = (last_group && (fc_out_features_i[3:0] != 4'd0)) ? {1'b0 , fc_out_features_i[3:0]} : 5'd16;
 //结束地址计算
 assign fc_input_end_addr = fc_input_base_addr_i + fc_in_features_i;
-assign fc_weight_end_addr = fc_weight_base_addr_i + fc_out_features_i * fc_in_features_i;
+//向上补齐到16的倍数，后面自动补0了
+assign fc_weight_end_addr = fc_weight_base_addr_i + (((fc_out_features_i + 32'd15) >> 4) << 4) * fc_in_features_i;
 assign group_bias_end_addr = fc_bias_base_addr_i + ({29'd0, group_cnt} << 6) + ({27'd0, group_bias_count} << 2);
 assign group_bias_base_addr = fc_bias_base_addr_i + (group_cnt << 6);//bias一个32位，要多*4
 

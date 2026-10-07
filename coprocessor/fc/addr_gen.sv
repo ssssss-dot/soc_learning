@@ -23,17 +23,15 @@ module addr_gen(
     input [`DataBus] input_end_addr,
 
     //bram读控制和地址
-    output  reg        bram_rd_en,
+    output  reg         bram_rd_en,
     output  reg [13:0]  bram_rd_addr,
 
     input input_loading,
     input bias_loading,
     input computing,
 
-    //当前通道对应的数据地址读取完成
-    output reg input_done,
-    output reg weight_done,
-    output reg bias_done
+    input group_start,//每组开始，weight_cnt重新计数
+    input [`DataBus] features_i
 );
 
 //内部地址寄存器
@@ -41,9 +39,24 @@ reg [`DataBus] input_addr;
 reg [`DataBus] weight_addr;
 reg [`DataBus] bias_addr;
 
+// 内部读请求完成标志：最后一次请求发出后，阻止重复读取末地址。
+reg input_done;
+reg weight_done;
+reg bias_done;
+
 localparam RD_INPUT = 2'd0;
 localparam RD_WEIGHT = 2'd1;
 localparam RD_BIAS = 2'd2;
+
+reg [10:0] weight_cnt;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        weight_cnt <= 32'd0;
+    else if (addr_init || group_start || weight_addr_begin)
+        weight_cnt <= 32'd0;
+    else if (bram_rd_en && (rd_sel == RD_WEIGHT))
+        weight_cnt <= weight_cnt + 32'd1;
+end
 
 //bias地址生成
 always @(posedge clk or negedge rst_n) begin 
@@ -56,7 +69,6 @@ always @(posedge clk or negedge rst_n) begin
         bias_done <= 1'b0;
     end
     else if (bias_loading && bram_rd_en && (rd_sel == RD_BIAS) && !bias_done) begin
-
         if ((bias_addr + 32'd4) >= group_bias_end_addr) begin
             bias_done <= 1'b1;
         end
@@ -78,8 +90,7 @@ always @(posedge clk or negedge rst_n) begin
         weight_done <= 1'b0;
     end
     else if (bram_rd_en &&
-             (rd_sel == RD_WEIGHT) &&
-             !weight_done) begin
+             (rd_sel == RD_WEIGHT) && !weight_done) begin
         if ((weight_addr + 32'd4) >= weight_end_addr) begin
             weight_done <= 1'b1;
         end
@@ -124,7 +135,7 @@ always @(*) begin
 
         RD_WEIGHT: begin
             bram_rd_en = rd_req && !weight_done && computing
-                               && !addr_init && !weight_addr_begin;
+                               && !addr_init && !group_start && !weight_addr_begin && (weight_cnt < features_i * 32'd4);
             bram_rd_addr = weight_addr[15:2];
         end
 

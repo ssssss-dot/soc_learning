@@ -5,11 +5,11 @@ module fc_reg(
     input clk,
     input rst_n,
 
-    // MMIO router -> Conv：寄存器访问请求
+    // MMIO router -> fc：寄存器访问请求
     input fc_req_valid,
     output fc_req_ready,
 
-    // Conv -> MMIO router：寄存器访问响应
+    // fc -> MMIO router：寄存器访问响应
     output fc_rsp_valid,
     input fc_rsp_ready,
 
@@ -26,7 +26,7 @@ module fc_reg(
     output [`DataBus] fc_out_features,//输出特征数量
     output reg [`DataBus] fc_input_base_addr,//输入特征图基地址
     output reg [`DataBus] fc_weight_base_addr,//输入权重基地址
-    output [`DataBus] fc_bias_base_addr,//输入偏置基地址
+    output reg [`DataBus] fc_bias_base_addr,//输入偏置基地址
     //量化数据
     output [`DataBus] fc_quant_mult,
     output [5:0] fc_quant_shift,
@@ -45,8 +45,12 @@ localparam REQ  = 2'd1;//等待请求握手
 localparam RSP  = 2'd2;//等待响应握手
 localparam DONE = 2'd3;//返回空闲
 
-assign fc_req_ready = rst_n && (state == REQ);
-assign fc_rsp_valid = rst_n && (state == RSP);
+reg [1:0] state;
+reg [1:0] next_state;
+
+//状态锁存信号
+reg done_q;
+reg error_q;
 
 reg [`DataBus] fc_ctrl_reg;
 wire [`DataBus] fc_status_reg;
@@ -65,6 +69,10 @@ assign fc_quant_shift     = fc_quant_shift_reg[5:0];
 
 assign fc_start           = fc_ctrl_reg[0];
 assign fc_relu_enable     = fc_ctrl_reg[2];
+
+assign fc_req_ready = rst_n && (state == REQ);
+assign fc_rsp_valid = rst_n && (state == RSP);
+
 //中断信号赋值
 assign fc_status_reg = {
     29'd0,
@@ -74,13 +82,6 @@ assign fc_status_reg = {
 };
 
 assign fc_irq = fc_ctrl_reg[1] && (done_q || error_q);
-
-reg [1:0] state;
-reg [1:0] next_state;
-
-//状态锁存信号
-reg done_q;
-reg error_q;
 
 // 第一段：状态寄存器
 always @(posedge clk or negedge rst_n) begin
