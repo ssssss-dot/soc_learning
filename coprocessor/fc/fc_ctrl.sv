@@ -179,10 +179,7 @@ always @(posedge clk or negedge rst_n)begin
             end
             WAIT_RESULT:begin
                 if(result_done)begin
-                    if(group_cnt == ((fc_out_features_i - 1'b1) >> $clog2(`FC_PE_NUMBER)))begin
-                        group_cnt <= 'd0;
-                    end
-                    else begin
+                    if(group_cnt < ((fc_out_features_i - 1'b1) >> $clog2(`FC_PE_NUMBER)))begin
                         group_cnt <= group_cnt + 1'b1;
                     end
                 end

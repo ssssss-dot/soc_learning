@@ -25,6 +25,7 @@ reg [`DataBus] line [0:15];
 reg [15:0] received;
 reg [4:0] ptr;
 reg line_done;
+reg output_finished;//表示每组输出完成，ptr固定不变了，防止无效输出
 
 reg all_received;
 integer i;
@@ -74,19 +75,25 @@ always @(posedge clk or negedge rst_n) begin
 end
 
 //每组串行输出
-always @(posedge clk or negedge rst_n)begin
-    if(!rst_n || group_start || addr_init)begin
-        ptr <= 'd0;
-        result_o <= 'd0;
-        result_valid_o <= 'd0;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n || group_start || addr_init) begin
+        ptr             <= 5'd0;
+        result_o        <= 32'd0;
+        result_valid_o  <= 1'b0;
+        output_finished <= 1'b0;
     end
     else begin
         result_valid_o <= 1'b0;
-        if (line_done && (ptr < group_bias_count_i) &&
-            (ptr < 5'd16)) begin
+
+        if (line_done && !output_finished && (ptr < group_bias_count_i)) begin
+
             result_o       <= line[ptr[3:0]];
             result_valid_o <= 1'b1;
             ptr            <= ptr + 5'd1;
+
+            // 发出最后一个结果后，禁止再次输出
+            if (ptr == group_bias_count_i - 5'd1)
+                output_finished <= 1'b1;
         end
     end
 end

@@ -37,6 +37,15 @@ module testbench_fc;
     reg monitor_enable, check_done, test_pass, timed_out;
     reg [2:0] case_pass;
 
+    // 测试数据直接放在数组里，既用于预填BRAM，也用于计算参考答案。
+    integer inputs [0:IN_COUNT-1];
+    integer weights [0:OUT_COUNT-1][0:IN_COUNT-1];
+    integer biases [0:OUT_COUNT-1];
+    integer test_no, oc, k, g, lane;
+    integer byte_addr, word_addr, byte_offset;
+    integer sum, scaled, mult, shift, relu;
+    reg case_ok;
+
     fc_top dut (
         .clk(clk), .rst_n(rst_n),
         .fc_req_valid(fc_req_valid), .fc_req_ready(fc_req_ready),
@@ -95,22 +104,6 @@ module testbench_fc;
         end
     endtask
 
-    function automatic integer input_value(input integer id, k);
-        if (id == 2)
-            input_value = (k % 2 == 0) ? (4-k) : -(4-k); // 4,-3,2,-1
-        else
-            input_value = k + 1; // 1,2,3,4
-    endfunction
-
-    function automatic integer weight_value(input integer id, oc, k);
-        if (id == 2) weight_value = 8 - oc - 2*k;
-        else         weight_value = oc + k - 8;
-    endfunction
-
-    task automatic put_byte(input integer byte_addr, input integer value);
-        bram[byte_addr/4][(byte_addr%4)*8 +: 8] = value[7:0];
-    endtask
-
     // 仅观察，不干预DUT。当前FC是一字节一次写，不是四字节一次写。
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -145,81 +138,8 @@ module testbench_fc;
         end
     end
 
-    task automatic run_case(input integer id);
-        integer oc, k, g, lane, sum, scaled, mult, shift, relu;
-        begin
-            @(negedge clk);
-            monitor_enable = 1'b0;
-            case_id = id;
-            data_errors = 0;
-            mult = (id == 3) ? 3 : 1;
-            shift = (id == 3) ? 1 : 0;
-            relu = (id == 2) ? 1 : 0;
-
-            // 每次只重填数据，不复位DUT，检查能否连续启动不同任务。
-            // 最后一个字的高两字节应保留EE，便于检查越界写入。
-            for (k = 0; k < 5; k = k + 1)
-                bram[k] = 32'hEEEE_EEEE;
-            for (k = 0; k < IN_COUNT; k = k + 1)
-                put_byte(INPUT_BASE + k, input_value(id, k));
-
-            // [输出组][输入特征][PE列]；第二组只有两列有效，其余补0。
-            for (g = 0; g < 2; g = g + 1)
-                for (k = 0; k < IN_COUNT; k = k + 1)
-                    for (lane = 0; lane < 16; lane = lane + 1) begin
-                        oc = g*16 + lane;
-                        put_byte(WEIGHT_BASE + (g*IN_COUNT+k)*16 + lane,
-                                 (oc < OUT_COUNT) ? weight_value(id, oc, k) : 0);
-                    end
-
-            for (oc = 0; oc < OUT_COUNT; oc = oc + 1) begin
-                bram[BIAS_BASE/4 + oc] = oc - 9;
-                // 直接按点积求参考答案，不引用任何DUT内部结果。
-                sum = oc - 9;
-                for (k = 0; k < IN_COUNT; k = k + 1)
-                    sum = sum + input_value(id, k) * weight_value(id, oc, k);
-                golden_sum[oc] = sum;
-                // 最近整数舍入，半值远离0；随后可选ReLU和INT8限幅。
-                scaled = sum * mult;
-                if (shift != 0) begin
-                    if (scaled >= 0) scaled = (scaled + (1 << (shift-1))) / (1 << shift);
-                    else scaled = -((-scaled + (1 << (shift-1))) / (1 << shift));
-                end
-                if (relu && scaled < 0) scaled = 0;
-                if (scaled > 127) scaled = 127;
-                if (scaled < -128) scaled = -128;
-                golden_data[oc] = scaled;
-                actual_sum[oc] = 32'hEEEE_EEEE;
-                actual_data[oc] = 8'hEE;
-            end
-
-            write_reg(`FC_IN_FEATURES_ADDR, IN_COUNT);
-            write_reg(`FC_OUT_FEATURES_ADDR, OUT_COUNT);
-            write_reg(`FC_INPUT_BASE_ADDR, INPUT_BASE);
-            write_reg(`FC_WEIGHT_BASE_ADDR, WEIGHT_BASE);
-            write_reg(`FC_BIAS_BASE_ADDR, BIAS_BASE);
-            write_reg(`FC_QUANT_MULT_ADDR, mult);
-            write_reg(`FC_QUANT_SHIFT_ADDR, shift);
-            monitor_enable = 1'b1;
-            write_reg(`FC_CONTROL_ADDR, relu ? 32'd7 : 32'd3);
-
-            wait (fc_done);
-            // 完成后继续观察，不能把done之后多出的结果掩盖掉。
-            repeat (20) @(negedge clk);
-            for (oc = 0; oc < OUT_COUNT; oc = oc + 1) begin
-                actual_data[oc] = bram[oc/4][(oc%4)*8 +: 8];
-                if (actual_data[oc] !== golden_data[oc])
-                    data_errors = data_errors + 1;
-            end
-            if (bram[4][31:16] !== 16'hEEEE) data_errors = data_errors + 1;
-            case_pass[id-1] = (accum_count == OUT_COUNT) && (accum_errors == 0)
-                           && (write_count == OUT_COUNT) && (write_errors == 0)
-                           && (data_errors == 0) && (dut.error === 1'b0)
-                           && (fc_busy === 1'b0) && (fc_irq === 1'b1);
-            repeat (5) @(negedge clk);
-        end
-    endtask
-
+    // 主流程从上往下看即可：复位 -> 三次测试 -> 总结检查结果。
+    // 只保留write_reg任务，用来重复完成寄存器握手。
     initial begin
         rst_n = 1'b0;
         fc_req_valid = 1'b0;
@@ -236,12 +156,140 @@ module testbench_fc;
         timed_out = 1'b0;
         case_pass = 3'b000;
         data_errors = 0;
-        for (integer i = 0; i < 16384; i = i + 1) bram[i] = 0;
+        for (k = 0; k < 16384; k = k + 1)
+            bram[k] = 0;
         repeat (4) @(negedge clk);
         rst_n = 1'b1;
-        run_case(1);
-        run_case(2);
-        run_case(3);
+
+        // 中间不复位FC，检查三次任务能否连续执行。
+        for (test_no = 1; test_no <= 3; test_no = test_no + 1) begin
+            @(negedge clk);
+            monitor_enable = 1'b0;
+            case_id = test_no;
+            data_errors = 0;
+
+            // 第1步：选择输入和量化参数。
+            // 测试1：普通点积；测试2：正负输入+ReLU；测试3：舍入+限幅。
+            inputs[0] = 1;
+            inputs[1] = 2;
+            inputs[2] = 3;
+            inputs[3] = 4;
+            mult = 1;
+            shift = 0;
+            relu = 0;
+            if (case_id == 2) begin
+                inputs[0] = 4;
+                inputs[1] = -3;
+                inputs[2] = 2;
+                inputs[3] = -1;
+                relu = 1;
+            end
+            if (case_id == 3) begin
+                mult = 3;
+                shift = 1;
+            end
+
+            // 第2步：生成18个输出各自的4个权重和1个偏置。
+            for (oc = 0; oc < OUT_COUNT; oc = oc + 1) begin
+                biases[oc] = oc - 9;
+                for (k = 0; k < IN_COUNT; k = k + 1) begin
+                    if (case_id == 2)
+                        weights[oc][k] = 8 - oc - 2*k;
+                    else
+                        weights[oc][k] = oc + k - 8;
+                end
+            end
+
+            // 第3步：把输入、权重、偏置放入模拟BRAM。
+            // 最后一个字的高两字节应保留EE，便于检查越界写入。
+            for (k = 0; k < 5; k = k + 1)
+                bram[k] = 32'hEEEE_EEEE;
+
+            // 本测试只有4个INT8输入，刚好一个字；输入0放最低字节。
+            bram[INPUT_BASE/4] = {inputs[3][7:0], inputs[2][7:0],
+                                  inputs[1][7:0], inputs[0][7:0]};
+
+            // [输出组][输入特征][PE列]；第二组只有两列有效，其余补0。
+            for (g = 0; g < 2; g = g + 1) begin
+                for (k = 0; k < IN_COUNT; k = k + 1) begin
+                    for (lane = 0; lane < 16; lane = lane + 1) begin
+                        oc = g*16 + lane;
+                        byte_addr = WEIGHT_BASE + (g*IN_COUNT+k)*16 + lane;
+                        word_addr = byte_addr / 4;
+                        byte_offset = byte_addr % 4;
+                        // +: 8表示从指定起始位向高位取8位。
+                        if (oc < OUT_COUNT)
+                            bram[word_addr][byte_offset*8 +: 8] = weights[oc][k][7:0];
+                        else
+                            bram[word_addr][byte_offset*8 +: 8] = 8'd0;
+                    end
+                end
+            end
+
+            for (oc = 0; oc < OUT_COUNT; oc = oc + 1)
+                bram[BIAS_BASE/4 + oc] = biases[oc];
+
+            // 第4步：独立算参考答案，不能用DUT输出代替。
+            for (oc = 0; oc < OUT_COUNT; oc = oc + 1) begin
+                sum = biases[oc];
+                for (k = 0; k < IN_COUNT; k = k + 1)
+                    sum = sum + inputs[k] * weights[oc][k];
+                golden_sum[oc] = sum;
+
+                scaled = sum * mult;
+                // 本TB只用shift=0或1；测试3除以2，半值向远离0方向舍入。
+                if (shift == 1) begin
+                    if (scaled >= 0)
+                        scaled = (scaled + 1) / 2;
+                    else
+                        scaled = -((-scaled + 1) / 2);
+                end
+                if (relu && scaled < 0) scaled = 0;
+                if (scaled > 127) scaled = 127;
+                if (scaled < -128) scaled = -128;
+                golden_data[oc] = scaled;
+                actual_sum[oc] = 32'hEEEE_EEEE;
+                actual_data[oc] = 8'hEE;
+            end
+
+            // 第5步：写配置寄存器，然后启动FC。
+            write_reg(`FC_IN_FEATURES_ADDR, IN_COUNT);
+            write_reg(`FC_OUT_FEATURES_ADDR, OUT_COUNT);
+            write_reg(`FC_INPUT_BASE_ADDR, INPUT_BASE);
+            write_reg(`FC_WEIGHT_BASE_ADDR, WEIGHT_BASE);
+            write_reg(`FC_BIAS_BASE_ADDR, BIAS_BASE);
+            write_reg(`FC_QUANT_MULT_ADDR, mult);
+            write_reg(`FC_QUANT_SHIFT_ADDR, shift);
+            monitor_enable = 1'b1;
+            if (relu)
+                write_reg(`FC_CONTROL_ADDR, 32'd7); // start+中断+ReLU
+            else
+                write_reg(`FC_CONTROL_ADDR, 32'd3); // start+中断
+
+            // 第6步：等完成，再多观察20拍，检查是否还在错误地输出结果。
+            wait (fc_done);
+            repeat (20) @(negedge clk);
+            for (oc = 0; oc < OUT_COUNT; oc = oc + 1) begin
+                word_addr = oc / 4;
+                byte_offset = oc % 4;
+                actual_data[oc] = bram[word_addr][byte_offset*8 +: 8];
+                if (actual_data[oc] !== golden_data[oc])
+                    data_errors = data_errors + 1;
+            end
+            if (bram[4][31:16] !== 16'hEEEE) data_errors = data_errors + 1;
+            // 先假定通过，任何一项不符合要求就记为失败。
+            case_ok = 1'b1;
+            if (accum_count != OUT_COUNT) case_ok = 1'b0;
+            if (accum_errors != 0)        case_ok = 1'b0;
+            if (write_count != OUT_COUNT) case_ok = 1'b0;
+            if (write_errors != 0)        case_ok = 1'b0;
+            if (data_errors != 0)         case_ok = 1'b0;
+            if (dut.error !== 1'b0)       case_ok = 1'b0;
+            if (fc_busy !== 1'b0)         case_ok = 1'b0;
+            if (fc_irq !== 1'b1)          case_ok = 1'b0;
+            case_pass[case_id-1] = case_ok;
+            repeat (5) @(negedge clk);
+        end
         check_done = 1'b1;
         test_pass = (case_pass === 3'b111) && !timed_out;
         repeat (5) @(negedge clk);
