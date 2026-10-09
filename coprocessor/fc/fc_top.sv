@@ -142,7 +142,7 @@ fc_ctrl u_fc_ctrl (
     .group_start(group_start)
 );
 
-addr_gen u_addr_gen (
+fc_addr_gen u_addr_gen (
     .clk(clk),
     .rst_n(rst_n),
     .addr_init(addr_init),
@@ -166,7 +166,7 @@ addr_gen u_addr_gen (
     .features_i(in_features)
 );
 
-read_arbiter u_read_arbiter (
+fc_read_arbiter u_read_arbiter (
     .clk(clk),
     .rst_n(rst_n),
     .acc_rd_en(acc_fc_rd_en),
@@ -177,7 +177,7 @@ read_arbiter u_read_arbiter (
     .bias_data_valid(bias_data_valid)
 );
 
-input_cache u_input_cache (
+fc_input_cache u_input_cache (
     .clk(clk),
     .rst_n(rst_n),
     .input_wr_data(acc_fc_rd_data),
@@ -192,7 +192,7 @@ input_cache u_input_cache (
     .feature_last(feature_last)
 );
 
-weight_cache u_weight_cache (
+fc_weight_cache u_weight_cache (
     .clk(clk),
     .rst_n(rst_n),
     .weight_wr_data(acc_fc_rd_data),
@@ -237,7 +237,7 @@ fc_pe_array u_pe_array (
     .valid_o(pe_result_valid)
 );
 
-accumulation u_accumulation (
+fc_accumulation u_accumulation (
     .clk(clk),
     .rst_n(rst_n),
     .result_i(pe_result),
@@ -252,7 +252,7 @@ accumulation u_accumulation (
     .drain_done(drain_done)
 );
 
-int32_int8 u_int32_int8 (
+fc_int32_int8 u_int32_int8 (
     .clk(clk),
     .rst_n(rst_n),
     .result_i(accum_result),

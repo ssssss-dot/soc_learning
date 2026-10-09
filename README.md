@@ -13,13 +13,13 @@
 | AXI / DDR | 顶层为 6 个主机入口、3 个从机出口，DDR 经过时钟转换器连接 MIG |
 | UART | Loader 使用 `uart_rxd/uart_txd`；CPU MMIO 打印使用独立的 `dbg_uart_txd` |
 | DMA | 读写描述符、状态和中断原因独立；AXI-Stream 两端连接共享 BRAM |
-| 共享 BRAM | 16384×32 位，即 64 KiB，供 DMA 和 Conv 使用 |
+| 共享 BRAM | 16384×32 位，即 64 KiB，供 DMA、Conv 和 FC 使用 |
 | Conv | 已例化到 `soc_top`，含 5×5 im2col、16×25 PE 阵列、跨通道累加、bias、量化、输出打包 |
-| FC | 已有地址宏和 router 内部路由；`fc_reg.sv` 是未完成框架，`fc_ctrl.sv` 为空，尚无完整计算模块及顶层接入 |
+| FC | 已例化到 `soc_top`，含寄存器、16 路 PE、bias、量化及 INT8 写回，通过 `bram_arbiter` 与 Conv 共享 BRAM |
 | Pool | 仅预留地址窗口，尚无计算模块、寄存器实现或 router 响应通路 |
 | 测试 | 有 DMA 裸机测试、Conv 独立 TB、Conv+DMA 裸机诊断程序，不是完整 CNN 推理验收 |
 
-当前 `soc_top` 的 router 实例只连接 DMA 和 Conv，尚未连接 FC 端口。**软件不要访问 Pool/FC 窗口**；不要假设未实现窗口会自动返回错误，当前 router 没有这类请求的默认完成响应。
+当前 `soc_top` 的 router 实例连接 DMA、Conv 和 FC。**软件不要访问 Pool 窗口**；不要假设未实现窗口会自动返回错误，当前 router 没有这类请求的默认完成响应。
 
 ## 2. 架构与数据流
 
@@ -34,11 +34,11 @@ DMA AXI master ─────────────────────�
                                            └── AXI-to-Native MMIO → mmio_router
                                                                       ├── dma_ctrl
                                                                       ├── conv_reg
-                                                                      └── FC预留，顶层未接通
+                                                                      └── fc_reg
 
 DDR → DMA读通道 → AXI-Stream → 共享BRAM（64 KiB）
                                     ↕
-                                  Conv
+                            bram_arbiter ↔ Conv / FC
                                     ↓
 DDR ← DMA写通道 ← AXI-Stream ← 共享BRAM
 ```
@@ -58,7 +58,7 @@ CPU/前端运行在 `clk` 域，DDR AXI 后端使用 MIG 的 `c0_ddr4_ui_clk`，
 
 DMA 的“读”指 **DDR→BRAM**，“写”指 **BRAM→DDR**。两方向可以分别启动、分别报告完成，不必完成一次往返才发中断。方向独立不表示共享数据可以无条件并发读写；先使用上述串行调度。
 
-顶层用 `conv_busy` 阻止 DMA 向共享 BRAM 写入，但这不是完整的多加速器仲裁，也不会替软件阻止所有有冲突的 DMA 读操作。计算期间不要启动冲突搬运。
+`bram_arbiter` 从 Conv/FC 的 start 到 done 锁存 BRAM 使用权，并输出 `acc_bram_blocked` 阻止 DMA 写入，包含 start 到 busy 拉高之前的启动阶段。软件必须串行启动 Conv/FC：现有仲裁器在两个标志都置位时优先 Conv，不会暂停或排队另一计算核；DMA 读取仍需软件避开冲突。
 
 ## 3. 地址空间与单位
 
@@ -73,7 +73,7 @@ DMA 的“读”指 **DDR→BRAM**，“写”指 **BRAM→DDR**。两方向可�
 | `0x4000_4000～0x4000_4FFF` | DMA 寄存器 |
 | `0x4000_5000～0x4000_5FFF` | Conv 寄存器 |
 | `0x4000_6000～0x4000_6FFF` | Pool 预留，不可访问 |
-| `0x4000_7000～0x4000_7FFF` | FC 预留，当前 SoC 不可访问 |
+| `0x4000_7000～0x4000_7FFF` | FC 寄存器 |
 
 DMA 的 SRC/DST 使用 **DDR AXI 物理地址**，不是 CPU 数据指针。当前裸机测试的转换为：
 
@@ -91,7 +91,7 @@ dma_phys_addr = cpu_data_addr - 0x80000000u + 0x10000000u;
 | Conv INPUT_BASE / WEIGHT_BASE | BRAM 字节偏移 |
 | Conv BIAS_BASE | **BRAM 32 位字地址**，低 14 位有效 |
 | Conv `acc_rd_addr/acc_wr_addr` | BRAM 32 位字地址，14 位 |
-| FC 各 BASE 的规划 | BRAM 字节偏移，包含 bias；尚待 FC 实现 |
+| FC INPUT_BASE / WEIGHT_BASE / BIAS_BASE | BRAM 字节偏移，包含 bias |
 
 例如 bias 放在 BRAM 字节偏移 `0x6000`，应向 Conv BIAS_BASE 写入 `0x1800`。MMIO 地址是“访问哪个寄存器”，BASE 寄存器内容是“数据在 RAM 的哪里”，两者不能混淆。
 
@@ -197,7 +197,7 @@ SHIFT=0 时不加舍入偏置；非正结果输出零。`int32_int8` 是四级�
 
 FC 基址 `0x4000_7000`，当前定义的寄存器偏移为：
 
-| 偏移 | 地址宏 | 规划用途 |
+| 偏移 | 地址宏 | 用途 |
 | --- | --- | --- |
 | `0x00` | `FC_CONTROL_ADDR` | 启动、中断、输出处理控制 |
 | `0x04` | `FC_STATUS_ADDR` | busy/done/error |
@@ -210,11 +210,11 @@ FC 基址 `0x4000_7000`，当前定义的寄存器偏移为：
 | `0x20` | `FC_QUANT_MULT_ADDR` | 量化乘数 |
 | `0x24` | `FC_QUANT_SHIFT_ADDR` | 量化右移位数 |
 
-以上是地址规划，不是可用外设承诺。后续需补全寄存器功能、FC 计算通路、顶层端口、中断接入，以及与 Conv/Pool 的共享 RAM 访问选择。
+FC 已接入 MMIO、共享 BRAM 和 CPU 外部中断。CONTROL 的 bit0 为单周期 start，bit1 为中断使能，bit2 为 ReLU 使能；STATUS 的 bit0 为 busy，bit1/2 为锁存的 done/error（写 1 清除）。配置在运行期间必须保持稳定。
 
 当前需要同步的设计差异：
 
-- 已讨论的 FC 方案是固定加 bias，保留 ReLU 开关和 INT32 输出选择；`define.sv` 的 CONTROL 注释仍列有 bit3 bias_enable，需在实现时统一为保留位或最终约定。本次只整理 README，未修改该宏注释或 RTL。
+- 当前 FC 固定加 bias，支持 ReLU 开关，输出为有符号 INT8；尚无 INT32 输出模式。
 - `acc_demo.py` 当前网络为 `400→96→64→10`，FC 地址宏注释仍举旧的 `400→120→84→10` 为例。实际配置应跟随本次导出的模型，不要照抄旧示例。
 - 最后一层分类分数不能强制 ReLU；若选 INT8 输出，应保留有符号结果并验证量化误差；若选 INT32 输出，10 个分数只需 40B。
 - Pool 暂仅预留 `0x4000_6000`，尚未定义完整寄存器表和实现。
@@ -223,7 +223,7 @@ RAM 规划优先复用已有 64 KiB 共享 RAM，不为每个加速器复制整�
 
 ## 7. 中断与 Cache 一致性
 
-顶层将 `dma_irq | conv_irq` 接到 CPU 的机器外部中断输入，没有独立 PLIC。软件在中断处理中分别读取 DMA/Conv 状态、确认来源并清除挂起原因；CPU 的 `mstatus.MIE`、`mie.MEIE` 和 `mtvec` 也需正确配置。
+顶层将 `dma_irq | conv_irq | fc_irq` 接到 CPU 的机器外部中断输入，没有独立 PLIC。软件在中断处理中分别读取 DMA/Conv/FC 状态、确认来源并清除挂起原因；CPU 的 `mstatus.MIE`、`mie.MEIE` 和 `mtvec` 也需正确配置。
 
 DCache 存储通路采用写穿方式。DMA 绕过 CPU Cache 写 DDR 后，顶层用独立的 `dma_wr_done_pulse` 通知 DCache 失效；该事件来自写描述符状态 valid，不受 DMA 中断使能屏蔽。DCache 忙时先记录待失效事件，回到空闲后清除有效位。
 
@@ -308,7 +308,7 @@ vivado_p5b_build/reports/utilization_impl.rpt
 vivado_p5b_build/reports/timing_impl.rpt
 ```
 
-脚本已列入 Conv 源码，未列入未完成的 FC。Taxi 的 rd/wr 目录有重复公共模块，沿用脚本去重文件清单，不要无差别递归加入所有 `.sv`。本次 README 整理未执行 Vivado 构建，不能保证当前开发快照无编译或时序问题。
+脚本已列入 Conv、FC、`pe_os` 和 `bram_arbiter` 源码。FC 的 6 个同名子模块已加 `fc_` 前缀，文件名和实例名保持原样。Taxi 的 rd/wr 目录仍有重复公共模块，沿用脚本去重文件清单，不要无差别递归加入所有 `.sv`。完整综合、实现和时序仍需匹配板卡的 MIG IP。
 
 ### 裸机编译与串口下载
 
@@ -339,7 +339,7 @@ python3 peqflash.py -serport /dev/ttyUSB0 -baud 115200 \
 
 导出包含 INT8 权重、INT32 小端 bias、第一张测试图片和标签，以及 `scales.json` 中每层的 MULT/SHIFT。Conv 权重已重排并填充到 16 个 PE 行，bias 按输入尺度×权重尺度量化。当前激活尺度由一个测试批次估计，不能代替量化后全测试集精度验证。
 
-模型文件准备好不等于硬件全网络已完成；Pool、FC 和层间调度仍需实现与验证。
+模型文件准备好不等于硬件全网络已完成；Pool 仍需实现，FC 和层间调度仍需整网验证。
 
 ## 11. 目录与后续工作
 
@@ -356,10 +356,10 @@ coprocessor/bram_for_acc.sv 共享加速器BRAM
 coprocessor/conv/          Conv计算与控制
 coprocessor/pe_ws.sv       当前Conv使用的weight-stationary PE
 coprocessor/pe_os.sv       保留的output-stationary PE，当前Conv未使用
-coprocessor/fc/            开发中的FC框架
+coprocessor/fc/            FC计算与控制
 ```
 
-近期需要完成：FC 寄存器/计算/输出模式、Pool、共享 RAM 访问控制、顶层与中断连接、未实现 MMIO 窗口的错误响应，以及各层单元测试到整网验证。改变参数、地址、数据布局或流水线后，应同步更新 RTL、软件和参考模型，并记录实际使用的源码版本与 bitstream。
+近期需要完成：Pool、共享 RAM 并发调度、未实现 MMIO 窗口的错误响应，以及各层单元测试到整网验证。改变参数、地址、数据布局或流水线后，应同步更新 RTL、软件和参考模型，并记录实际使用的源码版本与 bitstream。
 
 ## License
 

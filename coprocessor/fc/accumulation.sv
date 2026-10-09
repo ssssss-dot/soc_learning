@@ -1,6 +1,6 @@
 `include "define.sv"
 
-module accumulation(
+module fc_accumulation(
     input clk,
     input rst_n,
 

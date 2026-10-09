@@ -15,6 +15,8 @@ module conv_top (
     output wire [31:0] conv_rdata,
     output wire        conv_irq,
     output wire        conv_busy,
+    output wire        conv_start,
+    output wire        conv_done,
 
     output wire        acc_rd_en,
     output wire [13:0] acc_rd_addr,
@@ -66,6 +68,8 @@ wire signed [7:0] quant_data;
 wire quant_valid;
 
 assign conv_busy = busy;
+assign conv_start = start;
+assign conv_done = done;
 
 conv_reg u_conv_reg (
     .clk(clk),

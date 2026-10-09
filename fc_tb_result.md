@@ -221,7 +221,7 @@ coprocessor/fc/accumulation.sv
 coprocessor/fc/int32_int8.sv
 ```
 
-不要同时把conv文件夹整体编进这次独立仿真，两个文件夹存在同名模块。
+FC 与 Conv 原有的 6 个同名模块已在 FC 侧加 `fc_` 前缀，可以同时编译；本独立仿真仍只需上面的文件清单。
 
 ## 7. 当前RTL实际暴露的问题
 

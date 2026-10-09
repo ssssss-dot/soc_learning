@@ -1,6 +1,6 @@
 `include "define.sv"
 
-module weight_cache(
+module fc_weight_cache(
     input clk,
     input rst_n,
 

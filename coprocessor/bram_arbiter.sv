@@ -41,12 +41,17 @@ module bram_arbiter(
 
     //脉冲结束信号
     input conv_done,
-    input fc_done
+    input fc_done,
+
+    // Block DMA writes for the entire ownership window, including startup.
+    output wire acc_bram_blocked
 );
 
 //锁存启动信号
 reg conv_flag;
 reg fc_flag;
+
+assign acc_bram_blocked = conv_start || fc_start || conv_flag || fc_flag;
 
 always @(posedge clk or negedge rst_n)begin
     if(!rst_n)begin

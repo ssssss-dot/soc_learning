@@ -1,7 +1,7 @@
 `include "define.sv"
 
 //四级流水线做量化,锁存，乘法，右移，relu
-module int32_int8 (
+module fc_int32_int8 (
     input  wire               clk,
     input  wire               rst_n,
 

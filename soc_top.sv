@@ -407,8 +407,45 @@ wire conv_we;
 wire [`DataBus] conv_rdata;
 wire conv_irq;
 wire conv_busy;
+wire conv_start;
+wire conv_done;
 
-// Conv <-> shared accelerator BRAM
+// MMIO router -> FC configuration registers
+wire fc_req_ready;
+wire fc_req_valid;
+wire fc_rsp_valid;
+wire fc_rsp_ready;
+wire [`DataBus] fc_wdata;
+wire [`DataAddrBus] fc_addr;
+wire [3:0] fc_wstrb;
+wire fc_we;
+wire [`DataBus] fc_rdata;
+wire fc_irq;
+wire fc_busy;
+wire fc_start;
+wire fc_done;
+
+// Conv <-> BRAM arbiter
+wire acc_conv_rd_en;
+wire [13:0] acc_conv_rd_addr;
+wire [31:0] acc_conv_rd_data;
+wire acc_conv_rd_valid;
+wire acc_conv_wr_en;
+wire [13:0] acc_conv_wr_addr;
+wire [31:0] acc_conv_wr_data;
+wire [3:0] acc_conv_wr_strb;
+
+// FC <-> BRAM arbiter
+wire acc_fc_rd_en;
+wire [13:0] acc_fc_rd_addr;
+wire [31:0] acc_fc_rd_data;
+wire acc_fc_rd_valid;
+wire acc_fc_wr_en;
+wire [13:0] acc_fc_wr_addr;
+wire [31:0] acc_fc_wr_data;
+wire [3:0] acc_fc_wr_strb;
+
+// BRAM arbiter <-> shared accelerator BRAM in DMA subsystem
 wire acc_rd_en;
 wire [13:0] acc_rd_addr;
 wire [31:0] acc_rd_data;
@@ -418,13 +455,12 @@ wire [13:0] acc_wr_addr;
 wire [31:0] acc_wr_data;
 wire [3:0] acc_wr_strb;
 
-// DMA and Conv share the CPU machine-external interrupt input.
+// DMA, Conv and FC share the CPU machine-external interrupt input.
 wire accelerator_irq;
-assign accelerator_irq = dma_irq | conv_irq;
+assign accelerator_irq = dma_irq | conv_irq | fc_irq;
 
-// Block DMA writes into the shared BRAM while Conv owns it.
+// Driven by the arbiter from start through done, including pre-busy cycles.
 wire acc_bram_blocked;
-assign acc_bram_blocked = conv_busy;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -1162,7 +1198,17 @@ mmio_router u_mmio_router (
     .conv_addr         (conv_addr),
     .conv_wstrb        (conv_wstrb),
     .conv_we           (conv_we),
-    .conv_rdata        (conv_rdata)
+    .conv_rdata        (conv_rdata),
+
+    .fc_req_ready      (fc_req_ready),
+    .fc_req_valid      (fc_req_valid),
+    .fc_rsp_valid      (fc_rsp_valid),
+    .fc_rsp_ready      (fc_rsp_ready),
+    .fc_wdata          (fc_wdata),
+    .fc_addr           (fc_addr),
+    .fc_wstrb          (fc_wstrb),
+    .fc_we             (fc_we),
+    .fc_rdata          (fc_rdata)
 );
 
 // 关闭s_axi[0]未使用的写通道；ICache只会发起AXI读事务。
@@ -1510,6 +1556,75 @@ conv_top u_conv_top(
     .conv_rdata(conv_rdata),
     .conv_irq(conv_irq),
     .conv_busy(conv_busy),
+    .conv_start(conv_start),
+    .conv_done(conv_done),
+
+    .acc_rd_en(acc_conv_rd_en),
+    .acc_rd_addr(acc_conv_rd_addr),
+    .acc_rd_data(acc_conv_rd_data),
+    .acc_rd_valid(acc_conv_rd_valid),
+    .acc_wr_en(acc_conv_wr_en),
+    .acc_wr_addr(acc_conv_wr_addr),
+    .acc_wr_data(acc_conv_wr_data),
+    .acc_wr_strb(acc_conv_wr_strb)
+);
+
+// FC accelerator: CPU register window 0x4000_7000 - 0x4000_7fff.
+fc_top u_fc_top(
+    .clk(clk),
+    .rst_n(cpu_rst_n),
+
+    .fc_req_valid(fc_req_valid),
+    .fc_req_ready(fc_req_ready),
+    .fc_rsp_valid(fc_rsp_valid),
+    .fc_rsp_ready(fc_rsp_ready),
+    .fc_wdata(fc_wdata),
+    .fc_addr(fc_addr),
+    .fc_wstrb(fc_wstrb),
+    .fc_we(fc_we),
+    .fc_rdata(fc_rdata),
+    .fc_irq(fc_irq),
+    .fc_busy(fc_busy),
+    .fc_start(fc_start),
+    .fc_done(fc_done),
+
+    .acc_fc_rd_en(acc_fc_rd_en),
+    .acc_fc_rd_addr(acc_fc_rd_addr),
+    .acc_fc_rd_data(acc_fc_rd_data),
+    .acc_fc_rd_valid(acc_fc_rd_valid),
+    .acc_fc_wr_en(acc_fc_wr_en),
+    .acc_fc_wr_addr(acc_fc_wr_addr),
+    .acc_fc_wr_data(acc_fc_wr_data),
+    .acc_fc_wr_strb(acc_fc_wr_strb)
+);
+
+// Software must serialize Conv/FC jobs; neither engine supports backpressure.
+bram_arbiter u_bram_arbiter(
+    .clk(clk),
+    .rst_n(cpu_rst_n),
+    .conv_start(conv_start),
+    .conv_done(conv_done),
+    .fc_start(fc_start),
+    .fc_done(fc_done),
+    .acc_bram_blocked(acc_bram_blocked),
+
+    .acc_conv_rd_en(acc_conv_rd_en),
+    .acc_conv_rd_addr(acc_conv_rd_addr),
+    .acc_conv_rd_data(acc_conv_rd_data),
+    .acc_conv_rd_valid(acc_conv_rd_valid),
+    .acc_conv_wr_en(acc_conv_wr_en),
+    .acc_conv_wr_addr(acc_conv_wr_addr),
+    .acc_conv_wr_data(acc_conv_wr_data),
+    .acc_conv_wr_strb(acc_conv_wr_strb),
+
+    .acc_fc_rd_en(acc_fc_rd_en),
+    .acc_fc_rd_addr(acc_fc_rd_addr),
+    .acc_fc_rd_data(acc_fc_rd_data),
+    .acc_fc_rd_valid(acc_fc_rd_valid),
+    .acc_fc_wr_en(acc_fc_wr_en),
+    .acc_fc_wr_addr(acc_fc_wr_addr),
+    .acc_fc_wr_data(acc_fc_wr_data),
+    .acc_fc_wr_strb(acc_fc_wr_strb),
 
     .acc_rd_en(acc_rd_en),
     .acc_rd_addr(acc_rd_addr),
@@ -1528,7 +1643,7 @@ dma_subsystem_top u_dma_subsystem_top(
 
     .acc_bram_blocked(acc_bram_blocked),
 
-    // Conv access to the shared BRAM
+    // Arbitrated Conv/FC access to the shared BRAM
     .acc_rd_en(acc_rd_en),
     .acc_rd_addr(acc_rd_addr),
     .acc_rd_data(acc_rd_data),

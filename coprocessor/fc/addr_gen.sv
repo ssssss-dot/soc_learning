@@ -1,6 +1,6 @@
 `include "define.sv"
 
-module addr_gen(
+module fc_addr_gen(
     input clk,
     input rst_n,
 

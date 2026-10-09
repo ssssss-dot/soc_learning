@@ -1,6 +1,6 @@
 `include "define.sv"
 
-module input_cache(
+module fc_input_cache(
     input clk,
     input rst_n,
 

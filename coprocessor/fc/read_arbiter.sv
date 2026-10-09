@@ -1,4 +1,4 @@
-module read_arbiter(
+module fc_read_arbiter(
     input clk,
     input rst_n,
 
