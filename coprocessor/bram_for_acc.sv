@@ -54,6 +54,27 @@ wire ddr2ram_start_dma;
 wire        bram_rd_en_dma;
 wire [13:0] bram_rd_addr_dma;
 
+//双扣ram，每个端口读写的always块内部只能有一个地址
+// A口：DMA
+wire        dma_write;
+wire        port_a_en;
+wire [13:0] port_a_addr;
+wire [3:0]  port_a_we;
+
+assign dma_write  = valid_i_dma && ready_i_dma;
+assign port_a_en  = dma_write || bram_rd_en_dma;
+assign port_a_addr = dma_write ? ptr_wr_dma : bram_rd_addr_dma;
+assign port_a_we  = dma_write ? keep_i_dma : 4'b0000;
+
+// B口：ACC，即仲裁后的 Conv/FC
+wire        port_b_en;
+wire [13:0] port_b_addr;
+wire [3:0]  port_b_we;
+
+assign port_b_en   = acc_wr_en || acc_rd_en;
+assign port_b_addr = acc_wr_en ? acc_wr_addr : acc_rd_addr;
+assign port_b_we   = acc_wr_en ? acc_wr_strb : 4'b0000;
+
 assign bram_rd_en_dma =
     ram2ddr_start_dma ||
     (valid_o_dma && ready_o_dma && !last_o_dma);
@@ -113,23 +134,22 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
+// BRAM A口：DMA读写，共用port_a_addr
 always @(posedge clk) begin
-    if(valid_i_dma && ready_i_dma)begin
-        if(keep_i_dma[0])begin
-            bram[ptr_wr_dma][7:0] <= data_i_dma[7:0];
-        end
-        if(keep_i_dma[1])begin
-            bram[ptr_wr_dma][15:8] <= data_i_dma[15:8];
-        end
-        if(keep_i_dma[2])begin
-            bram[ptr_wr_dma][23:16] <= data_i_dma[23:16];
-        end
-        if(keep_i_dma[3])begin
-            bram[ptr_wr_dma][31:24] <= data_i_dma[31:24];
-        end
-    end
-    else if (bram_rd_en_dma) begin
-        data_o_dma <= bram[bram_rd_addr_dma];
+    if (port_a_en) begin
+        if (port_a_we[0])
+            bram[port_a_addr][7:0] <= data_i_dma[7:0];
+
+        if (port_a_we[1])
+            bram[port_a_addr][15:8] <= data_i_dma[15:8];
+
+        if (port_a_we[2])
+            bram[port_a_addr][23:16] <= data_i_dma[23:16];
+
+        if (port_a_we[3])
+            bram[port_a_addr][31:24] <= data_i_dma[31:24];
+
+        data_o_dma <= bram[port_a_addr];
     end
 end
 
@@ -158,23 +178,22 @@ always @(posedge clk or negedge rst_n) begin
 end
 
 //acc读写ram,注意读写互斥
-//ACC使用B口:读写分拍，写优先
+// BRAM B口：ACC读写，共用port_b_addr
 always @(posedge clk) begin
-    if (acc_wr_en) begin
-        if (acc_wr_strb[0])
-            bram[acc_wr_addr][7:0] <= acc_wr_data[7:0];
+    if (port_b_en) begin
+        if (port_b_we[0])
+            bram[port_b_addr][7:0] <= acc_wr_data[7:0];
 
-        if (acc_wr_strb[1])
-            bram[acc_wr_addr][15:8] <= acc_wr_data[15:8];
+        if (port_b_we[1])
+            bram[port_b_addr][15:8] <= acc_wr_data[15:8];
 
-        if (acc_wr_strb[2])
-            bram[acc_wr_addr][23:16] <= acc_wr_data[23:16];
+        if (port_b_we[2])
+            bram[port_b_addr][23:16] <= acc_wr_data[23:16];
 
-        if (acc_wr_strb[3])
-            bram[acc_wr_addr][31:24] <= acc_wr_data[31:24];
-    end
-    else if (acc_rd_en) begin
-        acc_rd_data <= bram[acc_rd_addr];
+        if (port_b_we[3])
+            bram[port_b_addr][31:24] <= acc_wr_data[31:24];
+
+        acc_rd_data <= bram[port_b_addr];
     end
 end
 
