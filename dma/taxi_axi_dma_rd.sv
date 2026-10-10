@@ -81,7 +81,7 @@ localparam AXIS_BYTE_SIZE = AXIS_DATA_W/AXIS_BYTE_LANES;
 localparam OFFSET_W = AXI_STRB_W > 1 ? $clog2(AXI_STRB_W) : 1;
 localparam OFFSET_MASK = AXI_STRB_W > 1 ? {OFFSET_W{1'b1}} : 0;
 localparam ADDR_MASK = {AXI_ADDR_W{1'b1}} << $clog2(AXI_STRB_W);
-localparam CYCLE_COUNT_W = 13 - AXI_BURST_SIZE;
+localparam CYCLE_COUNT_W = LEN_W - AXI_BURST_SIZE + 1;
 
 localparam OUTPUT_FIFO_AW = 5;
 
