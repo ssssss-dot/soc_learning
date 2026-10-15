@@ -167,6 +167,12 @@ set rtl_files [list \
     "coprocessor/conv/int32_int8.sv" \
     "coprocessor/conv/output_cache.sv" \
     "coprocessor/conv/conv_top.sv" \
+    "coprocessor/pool/pool_reg.sv" \
+    "coprocessor/pool/pool_ctrl.sv" \
+    "coprocessor/pool/cmp.sv" \
+    "coprocessor/pool/addr_change.sv" \
+    "coprocessor/pool/wb.sv" \
+    "coprocessor/pool/pool_top.sv" \
     "dma/dma_ctrl.sv" \
     "dma/taxi_axi_dma_rd.sv" \
     "dma/taxi_axi_dma_wr.sv" \

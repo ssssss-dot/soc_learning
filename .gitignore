@@ -25,3 +25,7 @@ work/
 *.fst
 *.bin
 transcript
+
+# Keep the small model examples and their packaged download image.
+!parameter_example/*.bin
+!cnn_test/model_data.bin

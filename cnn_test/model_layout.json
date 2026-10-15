@@ -1,0 +1,158 @@
+{
+  "network": "1x32x32 -> 6x28x28 -> 6x14x14 -> 16x10x10 -> 16x5x5 -> 400 -> 96 -> 64 -> 10",
+  "model_size_bytes": 50204,
+  "loader_base_offset": 65536,
+  "cpu_base_address": 2147549184,
+  "ddr_base_address": 268500992,
+  "loader_packet": "D0*4 + big-endian length + big-endian offset + reversed 4-byte words + E0*4",
+  "memory_payload_byte_order": "Original INT8 bytes; little-endian INT32 bias and quantization table",
+  "quantization_order": [
+    "conv1",
+    "conv2",
+    "fc1",
+    "fc2",
+    "fc3"
+  ],
+  "quantization": {
+    "conv1": {
+      "mult": 3547927915,
+      "shift": 42
+    },
+    "conv2": {
+      "mult": 82480021,
+      "shift": 36
+    },
+    "fc1": {
+      "mult": 1500932855,
+      "shift": 40
+    },
+    "fc2": {
+      "mult": 2519487945,
+      "shift": 40
+    },
+    "fc3": {
+      "mult": 2742162039,
+      "shift": 40
+    }
+  },
+  "entries": [
+    {
+      "name": "test_images",
+      "offset_in_model": 0,
+      "loader_offset": 65536,
+      "cpu_address": 2147549184,
+      "ddr_address": 268500992,
+      "size_bytes": 1024,
+      "sha256": "2476ebb52d3e285daee620ac3f6d98fa699689319faf1e09e5b48eccbe512440"
+    },
+    {
+      "name": "conv1_weight",
+      "offset_in_model": 1024,
+      "loader_offset": 66560,
+      "cpu_address": 2147550208,
+      "ddr_address": 268502016,
+      "size_bytes": 400,
+      "sha256": "acc15dc8123fa4e4b36fd96819a63a54b3d2353d8ba9ad565fba85d92d10be4c"
+    },
+    {
+      "name": "conv1_bias",
+      "offset_in_model": 1424,
+      "loader_offset": 66960,
+      "cpu_address": 2147550608,
+      "ddr_address": 268502416,
+      "size_bytes": 24,
+      "sha256": "48741a6ab7e2f078c69f7e658488143fe729b98b0c180592fbb1c98c8494d403"
+    },
+    {
+      "name": "conv2_weight",
+      "offset_in_model": 1448,
+      "loader_offset": 66984,
+      "cpu_address": 2147550632,
+      "ddr_address": 268502440,
+      "size_bytes": 2400,
+      "sha256": "45a06266ff31fc2f9759d06899be1776cfb9b329d15bdc0e47380197a269d55e"
+    },
+    {
+      "name": "conv2_bias",
+      "offset_in_model": 3848,
+      "loader_offset": 69384,
+      "cpu_address": 2147553032,
+      "ddr_address": 268504840,
+      "size_bytes": 64,
+      "sha256": "30f67a4e4e96be992fa1b730c958651c2fa27f874fe339a333d767b0a950183d"
+    },
+    {
+      "name": "fc1_weight",
+      "offset_in_model": 3912,
+      "loader_offset": 69448,
+      "cpu_address": 2147553096,
+      "ddr_address": 268504904,
+      "size_bytes": 38400,
+      "sha256": "eb6ccb6e99677f4f836595534705d87c62cf2bf8cccdbd21badb3584e4ba3164"
+    },
+    {
+      "name": "fc1_bias",
+      "offset_in_model": 42312,
+      "loader_offset": 107848,
+      "cpu_address": 2147591496,
+      "ddr_address": 268543304,
+      "size_bytes": 384,
+      "sha256": "52f81da2f8c56ae8d011977764b92b59f96f6e8690be84310148f1d7e3dcad26"
+    },
+    {
+      "name": "fc2_weight",
+      "offset_in_model": 42696,
+      "loader_offset": 108232,
+      "cpu_address": 2147591880,
+      "ddr_address": 268543688,
+      "size_bytes": 6144,
+      "sha256": "e1109a76fd6371d5ff52bfa53ae6128eec5364e8f1ffb5f4af02a21c1f6a0d4e"
+    },
+    {
+      "name": "fc2_bias",
+      "offset_in_model": 48840,
+      "loader_offset": 114376,
+      "cpu_address": 2147598024,
+      "ddr_address": 268549832,
+      "size_bytes": 256,
+      "sha256": "5eea4c3d326ba370e063b961d755778517f4302cb7fee0fa4219faa0ce1af28a"
+    },
+    {
+      "name": "fc3_weight",
+      "offset_in_model": 49096,
+      "loader_offset": 114632,
+      "cpu_address": 2147598280,
+      "ddr_address": 268550088,
+      "size_bytes": 1024,
+      "sha256": "c245671c892b2be816db92afac112a3cdd5bb0f91cc68a29c20a18a345470960"
+    },
+    {
+      "name": "fc3_bias",
+      "offset_in_model": 50120,
+      "loader_offset": 115656,
+      "cpu_address": 2147599304,
+      "ddr_address": 268551112,
+      "size_bytes": 40,
+      "sha256": "1f89ef21a47aa20c11298c1f00fb01eb4b759a38665902341f8f15154eeaf0f7"
+    },
+    {
+      "name": "test_labels",
+      "offset_in_model": 50160,
+      "loader_offset": 115696,
+      "cpu_address": 2147599344,
+      "ddr_address": 268551152,
+      "size_bytes": 1,
+      "sha256": "ca358758f6d27e6cf45272937977a748fd88391db679ceda7dc7bf1f005ee879"
+    },
+    {
+      "name": "quant_params",
+      "offset_in_model": 50164,
+      "loader_offset": 115700,
+      "cpu_address": 2147599348,
+      "ddr_address": 268551156,
+      "size_bytes": 40,
+      "sha256": "743122793490fa471420cbc0bcdf908d7cf83b30e7e03a11847b637cf6d708b3"
+    }
+  ],
+  "program_dmem_source": null
+}

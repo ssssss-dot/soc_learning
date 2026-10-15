@@ -1,3 +1,37 @@
+soc_learning - Project licensing notice
+======================================
+
+SPDX-License-Identifier: CERN-OHL-S-2.0
+Source location: https://github.com/ssssss-dot/soc_learning
+
+The original hardware design sources, integration logic, accompanying software
+and documentation contributed to soc_learning are made available under the CERN
+Open Hardware Licence Version 2 - Strongly Reciprocal (CERN-OHL-S-2.0), except
+where a file or its original distribution specifies different terms.
+
+Project material includes the original CPU and accelerator design, SoC
+integration, bare-metal inference program, model export/build helpers, and
+project documentation. This notice identifies the project's licensing scope;
+it does not change the standard licence text reproduced below.
+
+Third-party material retains its original copyright and licensing terms:
+
+* Taxi AXI crossbar and DMA sources retain their CERN-OHL-S-2.0 file notices.
+* Taxi interfaces and other files marked SPDX-License-Identifier: MIT retain
+  their MIT notices. The MIT text is provided in LICENSES/MIT-FPGA-Ninja.txt.
+* download/peqflash.py retains the Mitu Raj / Chipmunk Logic attribution and
+  its upstream terms; this project notice does not relicense that file.
+* AMD/Xilinx tools and generated IP, external Python packages, and third-party
+  datasets remain subject to their respective terms. Their inclusion as a
+  dependency or example does not grant additional rights under this notice.
+
+See THIRD_PARTY_NOTICES.md for the local file inventory and upstream references.
+Retain the applicable file notices when copying or distributing those files.
+
+The following CERN-OHL-S-2.0 standard text is reproduced without modification.
+
+-------------------------------------------------------------------------------
+
 CERN Open Hardware Licence Version 2 - Strongly Reciprocal
 
 Preamble

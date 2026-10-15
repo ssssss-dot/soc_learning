@@ -1,0 +1,115 @@
+{
+  "_quantization": {
+    "description": "每层的quant_mult、quant_shift是可写入硬件寄存器的整数值；同层所有输出通道共用。",
+    "quant_mult_bits": 32,
+    "quant_mult_signed": false,
+    "quant_shift_bits": 6,
+    "quant_shift_range": [
+      0,
+      63
+    ],
+    "quant_shift_note": "32位寄存器仅低6位有效，其余位写0。",
+    "target_formula": "input_scale * weight_scale / output_scale",
+    "hardware_scale_formula": "quant_mult / (2 ** quant_shift)",
+    "product_note": "int32累加结果乘无符号quant_mult，乘积使用64位有符号数保存。"
+  },
+  "_conv_weight_layout": {
+    "layout": "[input_channel][kernel_index][pe_row]",
+    "pe_rows": 16,
+    "kernel_index": "kernel_y * kernel_width + kernel_x",
+    "padding": "输出通道不足16时，高编号PE行的权重补0。",
+    "address_formula": "((input_channel * kernel_elements + kernel_index) * 16 + pe_row) bytes"
+  },
+  "_fc_weight_layout": {
+    "layout": "[output_group][input_index][pe_col]",
+    "pe_cols": 16,
+    "output_index": "output_group * 16 + pe_col",
+    "padding": "最后一组不足16个输出时，剩余列权重补0；硬件不写回这些列的结果。bias不补齐。",
+    "address_formula": "((output_group * in_features + input_index) * 16 + pe_col) bytes",
+    "stream_note": "连续16字节组成一组权重向量；各列0~15次阵列推进的错拍延迟由硬件实现，文件不插入时序空拍。",
+    "layers": {
+      "fc1_weight": {
+        "out_features": 96,
+        "in_features": 400,
+        "output_groups": 6,
+        "padded_out_features": 96,
+        "shape": [
+          6,
+          400,
+          16
+        ],
+        "size_bytes": 38400
+      },
+      "fc2_weight": {
+        "out_features": 64,
+        "in_features": 96,
+        "output_groups": 4,
+        "padded_out_features": 64,
+        "shape": [
+          4,
+          96,
+          16
+        ],
+        "size_bytes": 6144
+      },
+      "fc3_weight": {
+        "out_features": 10,
+        "in_features": 64,
+        "output_groups": 1,
+        "padded_out_features": 16,
+        "shape": [
+          1,
+          64,
+          16
+        ],
+        "size_bytes": 1024
+      }
+    }
+  },
+  "conv1_weight": 0.005082430801992341,
+  "conv1_bias": 4.001914017316804e-05,
+  "conv1_input_scale": 0.007874015748031496,
+  "conv1_output_scale": 0.04960812170674482,
+  "conv1_acc_scale": 4.001914017316804e-05,
+  "conv1_requant_multiplier": 0.0008067054102499301,
+  "conv1_quant_mult": 3547927915,
+  "conv1_quant_shift": 42,
+  "conv1_requant_multiplier_approx": 0.000806705410241193,
+  "conv2_weight": 0.0024535461204258477,
+  "conv2_bias": 0.00012171581455519704,
+  "conv2_input_scale": 0.04960812170674482,
+  "conv2_output_scale": 0.10140937144362082,
+  "conv2_acc_scale": 0.00012171581455519704,
+  "conv2_requant_multiplier": 0.001200242273692286,
+  "conv2_quant_mult": 82480021,
+  "conv2_quant_shift": 36,
+  "conv2_requant_multiplier_approx": 0.0012002422736259177,
+  "fc1_weight": 0.001680384470721868,
+  "fc1_bias": 0.0001704067329595261,
+  "fc1_input_scale": 0.10140937144362082,
+  "fc1_output_scale": 0.12483182291346272,
+  "fc1_acc_scale": 0.0001704067329595261,
+  "fc1_requant_multiplier": 0.001365090479193413,
+  "fc1_quant_mult": 1500932855,
+  "fc1_quant_shift": 40,
+  "fc1_requant_multiplier_approx": 0.0013650904793394147,
+  "fc2_weight": 0.002303852575031791,
+  "fc2_bias": 0.0002875941166650936,
+  "fc2_input_scale": 0.12483182291346272,
+  "fc2_output_scale": 0.12550688165379323,
+  "fc2_acc_scale": 0.0002875941166650936,
+  "fc2_requant_multiplier": 0.0022914609372449626,
+  "fc2_quant_mult": 2519487945,
+  "fc2_quant_shift": 40,
+  "fc2_requant_multiplier_approx": 0.002291460937158263,
+  "fc3_weight": 0.0036718507451335277,
+  "fc3_bias": 0.00046084253691986614,
+  "fc3_input_scale": 0.12550688165379323,
+  "fc3_output_scale": 0.18478183295783096,
+  "fc3_acc_scale": 0.00046084253691986614,
+  "fc3_requant_multiplier": 0.002493981846283747,
+  "fc3_quant_mult": 2742162039,
+  "fc3_quant_shift": 40,
+  "fc3_requant_multiplier_approx": 0.00249398184587335,
+  "test_images": 0.007874015748031496
+}
