@@ -7,6 +7,7 @@
  *
  * 图片、权重、偏置和量化参数使用 soc_export_int8 中的训练导出结果。
  * CPU 负责配置寄存器、DMA 搬运、结果校验和分类，计算由协处理器完成。
+ * 默认由机器外部中断报告完成；定义 CNN_USE_INTERRUPTS=0 可恢复原轮询模式。
  *
  * 构建：build_cnn.py；链接脚本：linker_cnn.ld。
  * 日志：0x40000000 -> dbg_uart_txd，115200 baud，8N1。
@@ -20,6 +21,16 @@
 #include "model_layout.h"   /* 自动生成：模型地址、数据长度、MULT/SHIFT。 */
 #include "cnn_reference.h"  /* 自动生成：各层 INT8 参考结果、模型校验值。 */
 
+
+#ifndef CNN_USE_INTERRUPTS
+#define CNN_USE_INTERRUPTS 1
+#endif
+
+#if CNN_USE_INTERRUPTS != 0 && CNN_USE_INTERRUPTS != 1
+#error "CNN_USE_INTERRUPTS must be 0 or 1"
+#endif
+
+#define IRQ_ENABLE_BIT (CNN_USE_INTERRUPTS ? 2u : 0u)
 
 /* 1. MMIO 寄存器与内存布局 */
 
@@ -37,9 +48,11 @@
 #define DMA_STATUS     0x40004010u  /* busy、done、error 状态。 */
 #define DMA_CLEAR      0x40004014u  /* 写 1 清除对应的完成/错误标志。 */
 #define DMA_WR_LEN     0x40004018u  /* BRAM -> DDR 搬运字节数。 */
-#define DMA_IRQ_EN     0x40004020u  /* DMA 中断使能，本程序配置为 0。 */
+#define DMA_IRQ_STATUS 0x4000401Cu  /* bit0/1：读/写完成；bit2/3：读/写错误。 */
+#define DMA_IRQ_EN     0x40004020u  /* 与 CONTROL.bit1 一起控制 DMA 中断。 */
 #define DMA_RD_OFFSET  0x40004024u  /* DDR -> BRAM 的 BRAM 字节偏移。 */
 #define DMA_WR_OFFSET  0x40004028u  /* BRAM -> DDR 的 BRAM 字节偏移。 */
+#define TIME_COUNTER   0x40004030u  /* 硬件保存的一次推理耗时，单位为 clk 周期。 */
 
 #define CONV_BASE      0x40005000u
 #define POOL_BASE      0x40006000u
@@ -50,7 +63,7 @@
 #define BUSY           1u          /* bit0：正在运行。 */
 #define DONE           2u          /* bit1：运行完成，写 1 清除。 */
 #define ERROR          4u          /* bit2：发生错误，写 1 清除。 */
-#define TIMEOUT        5000000u    /* 最大轮询次数，不是时钟周期数。 */
+#define TIMEOUT        5000000u    /* 最大等待循环次数，不是时钟周期数。 */
 
 /*
  * 共享 BRAM 内部布局，下面三个地址都是字节偏移：
@@ -89,7 +102,7 @@ static void memory_fence(void)
     __asm__ volatile ("fence rw, rw" ::: "memory");
 }
 
-/* 使用轮询等待完成，因此关闭 mstatus.MIE 和 mie 中的中断使能。 */
+/* 初始化前和程序结束时关闭中断；安装好入口后才允许硬件中断。 */
 static void disable_interrupts(void)
 {
     uint32_t mask = 8u;
@@ -202,6 +215,43 @@ __attribute__((noinline)) static void uart_number(int32_t value)
 }
 
 
+/*
+ * 打印完整 UINT32 范围，不使用除法或取余，适用于没有 M 扩展的 RV32I。
+ * fractional_digits=0 打印整数；100MHz 时取 5，按每毫秒 100000 周期
+ * 插入小数点，直接输出毫秒数，保留五位小数。
+ */
+static void uart_u32_decimal(uint32_t value, uint32_t fractional_digits)
+{
+    static const uint32_t places[10] = {
+        1000000000u, 100000000u, 10000000u, 1000000u, 100000u,
+        10000u, 1000u, 100u, 10u, 1u
+    };
+    uint32_t place;
+    uint32_t started = 0u;
+    uint32_t integer_last = 9u - fractional_digits;
+
+    for (place = 0u; place < 10u; ++place)
+    {
+        uint32_t digit = 0u;
+        while (value >= places[place])
+        {
+            value -= places[place];
+            ++digit;
+        }
+
+        if (digit || started || place == integer_last)
+        {
+            uart_putc((char)('0' + digit));
+            started = 1u;
+        }
+        if (fractional_digits && place == integer_last)
+        {
+            uart_putc('.');
+        }
+    }
+}
+
+
 /* 3. 错误报告与硬件完成等待 */
 
 static int fail(const char *stage, uint32_t detail)
@@ -238,8 +288,131 @@ static int configure(uint32_t address, uint32_t value)
 }
 
 /*
+ * 当前软件一次只启动一个 DMA/计算任务；每次启动前清对应的软件事件。
+ * ISR 先保存完成/错误状态，再 W1C 硬件中断源；主循环不再反复读 MMIO。
+ * 外部中断为 DMA | Conv | Pool | FC，因此 ISR 检查所有来源。
+ */
+enum completion_slot {
+    IRQ_DMA_RD, IRQ_DMA_WR, IRQ_CONV, IRQ_POOL, IRQ_FC, IRQ_SLOT_COUNT
+};
+
+#if CNN_USE_INTERRUPTS
+static volatile uint32_t irq_events[IRQ_SLOT_COUNT];
+static volatile uint32_t irq_counts[IRQ_SLOT_COUNT];
+static volatile uint32_t irq_fault;
+
+/* 可由后续摄像头应用覆盖。必须非阻塞，不能启动另一个共享 DMA/计算任务。 */
+__attribute__((weak)) void cnn_background_work(void)
+{
+    __asm__ volatile ("nop");
+}
+
+static void service_external_irq(void)
+{
+    uint32_t pending = reg_read(DMA_IRQ_STATUS) & 15u;
+    uint32_t status;
+
+    if (pending)
+    {
+        status = reg_read(DMA_STATUS);
+        /* DMA_STATUS 的其他方向可能有旧 done，必须按本次 pending 区分。 */
+        if (pending & 5u)
+        {
+            irq_events[IRQ_DMA_RD] |= status & 0x14u;
+            ++irq_counts[IRQ_DMA_RD];
+        }
+        if (pending & 10u)
+        {
+            irq_events[IRQ_DMA_WR] |= status & 0x28u;
+            ++irq_counts[IRQ_DMA_WR];
+        }
+        reg_write(DMA_CLEAR, pending);
+    }
+
+    status = reg_read(CONV_BASE + STATUS) & (DONE | ERROR);
+    if (status)
+    {
+        irq_events[IRQ_CONV] |= status;
+        ++irq_counts[IRQ_CONV];
+        reg_write(CONV_BASE + STATUS, status);
+    }
+    status = reg_read(POOL_BASE + STATUS) & (DONE | ERROR);
+    if (status)
+    {
+        irq_events[IRQ_POOL] |= status;
+        ++irq_counts[IRQ_POOL];
+        reg_write(POOL_BASE + STATUS, status);
+    }
+    status = reg_read(FC_BASE + STATUS) & (DONE | ERROR);
+    if (status)
+    {
+        irq_events[IRQ_FC] |= status;
+        ++irq_counts[IRQ_FC];
+        reg_write(FC_BASE + STATUS, status);
+    }
+    memory_fence();
+}
+
+/* 编译器保存/恢复被使用的寄存器并生成 mret；外部中断不修改 mepc。 */
+__attribute__((interrupt("machine"), aligned(4)))
+static void cnn_trap_entry(void)
+{
+    uint32_t cause;
+    __asm__ volatile ("csrr %0, mcause" : "=r"(cause));
+    if (cause != 0x8000000Bu)
+    {
+        irq_fault = cause ? cause : 0xFFFFFFFFu;
+        __asm__ volatile ("csrw mie, zero" ::: "memory");
+        return;
+    }
+    service_external_irq();
+}
+
+static void enable_interrupts(void)
+{
+    uint32_t i;
+    uint32_t entry = (uint32_t)(uintptr_t)cnn_trap_entry;
+    uint32_t external = 1u << 11;
+    uint32_t global = 8u;
+
+    disable_interrupts();
+    reg_write(DMA_CLEAR, 15u);
+    reg_write(CONV_BASE + STATUS, DONE | ERROR);
+    reg_write(POOL_BASE + STATUS, DONE | ERROR);
+    reg_write(FC_BASE + STATUS, DONE | ERROR);
+    for (i = 0u; i < IRQ_SLOT_COUNT; ++i)
+    {
+        irq_events[i] = 0u;
+        irq_counts[i] = 0u;
+    }
+    irq_fault = 0u;
+
+    __asm__ volatile ("csrw mtvec, %0" :: "r"(entry) : "memory");
+    reg_write(DMA_IRQ_EN, 15u);
+    reg_write(DMA_CONTROL, IRQ_ENABLE_BIT);
+    reg_write(CONV_BASE, IRQ_ENABLE_BIT);
+    reg_write(POOL_BASE, IRQ_ENABLE_BIT);
+    reg_write(FC_BASE, IRQ_ENABLE_BIT);
+    memory_fence();
+    __asm__ volatile ("csrw mie, %0\ncsrs mstatus, %1"
+                      :: "r"(external), "r"(global) : "memory");
+}
+#endif
+
+static void prepare_completion(uint32_t slot)
+{
+#if CNN_USE_INTERRUPTS
+    irq_events[slot] = 0u;
+    memory_fence();
+#else
+    (void)slot;
+#endif
+}
+
+/*
  * DMA_STATUS：bit0/1 为读/写 busy，bit2/3 为读/写 done，bit4/5 为错误。
- * 只在 done=1 且对应 busy=0 时返回，不要求先观察到 busy=1。
+ * 轮询模式读硬件状态；中断模式读 ISR 保存的软件完成事件。
+ * ISR 仅保存 done/error 位，等待期间可以执行非阻塞后台任务。
  * busy_mask/done_mask 决定本次等待的是 DDR -> BRAM，还是 BRAM -> DDR。
  */
 static int wait_dma(uint32_t busy_mask, uint32_t done_mask)
@@ -249,7 +422,18 @@ static int wait_dma(uint32_t busy_mask, uint32_t done_mask)
 
     for (i = 0u; i < TIMEOUT; ++i)
     {
+#if CNN_USE_INTERRUPTS
+        if (irq_fault)
+            return fail("unexpected trap", irq_fault);
+        status = irq_events[busy_mask == 1u ? IRQ_DMA_RD : IRQ_DMA_WR];
+        if (!status)
+        {
+            cnn_background_work();
+            continue;
+        }
+#else
         status = reg_read(DMA_STATUS);
+#endif
 
         if (status & 0x30u)
         {
@@ -269,13 +453,14 @@ static int wait_dma(uint32_t busy_mask, uint32_t done_mask)
 /* 将 DDR 中的输入、权重或偏置搬到共享 BRAM，长度和偏移均以字节为单位。 */
 static int dma_to_bram(uint32_t ddr_address, uint32_t bytes, uint32_t bram_offset)
 {
+    prepare_completion(IRQ_DMA_RD);
     reg_write(DMA_CLEAR, 15u);             /* 清除上次完成/错误状态。 */
     reg_write(DMA_SRC, ddr_address);
     reg_write(DMA_RD_LEN, bytes);
     reg_write(DMA_RD_OFFSET, bram_offset);
     memory_fence();
 
-    reg_write(DMA_CONTROL, 1u);           /* 启动 DDR -> BRAM。 */
+    reg_write(DMA_CONTROL, 1u | IRQ_ENABLE_BIT); /* 启动读，保持中断总使能。 */
 
     return wait_dma(1u, 4u);
 }
@@ -288,7 +473,19 @@ static int wait_accelerator(uint32_t base)
 
     for (i = 0u; i < TIMEOUT; ++i)
     {
+#if CNN_USE_INTERRUPTS
+        if (irq_fault)
+            return fail("unexpected trap", irq_fault);
+        status = irq_events[base == CONV_BASE ? IRQ_CONV :
+                            base == POOL_BASE ? IRQ_POOL : IRQ_FC];
+        if (!status)
+        {
+            cnn_background_work();
+            continue;
+        }
+#else
         status = reg_read(base + STATUS);
+#endif
 
         if (status & ERROR)
         {
@@ -333,13 +530,14 @@ static int finish_layer(const char *name, uint32_t count,
     }
 
     memory_fence();
+    prepare_completion(IRQ_DMA_WR);
     reg_write(DMA_CLEAR, 15u);
     reg_write(DMA_DST, output_ddr_address());
     reg_write(DMA_WR_LEN, transfer);
     reg_write(DMA_WR_OFFSET, 0u);
     memory_fence();
 
-    reg_write(DMA_CONTROL, 4u);           /* 启动 BRAM -> DDR。 */
+    reg_write(DMA_CONTROL, 4u | IRQ_ENABLE_BIT); /* 启动写，保持中断总使能。 */
 
     if (wait_dma(2u, 8u))
     {
@@ -430,6 +628,7 @@ static int run_conv(uint32_t second, uint32_t input_ddr)
         return 1;
     }
 
+    prepare_completion(IRQ_CONV);
     reg_write(CONV_BASE + STATUS, DONE | ERROR);
 
     /*
@@ -453,7 +652,7 @@ static int run_conv(uint32_t second, uint32_t input_ddr)
     }
 
     memory_fence();
-    reg_write(CONV_BASE, 1u);             /* 启动卷积，中断使能保持 0。 */
+    reg_write(CONV_BASE, 1u | IRQ_ENABLE_BIT); /* 启动卷积。 */
 
     if (wait_accelerator(CONV_BASE))
     {
@@ -479,6 +678,7 @@ static int run_pool(uint32_t second)
     uart_puts("\r\n");
 
     /* Conv 输出仍在 BRAM 字节地址 0，无需从 DDR 重新装载。 */
+    prepare_completion(IRQ_POOL);
     reg_write(POOL_BASE + STATUS, DONE | ERROR);
 
     /* 0x08 配置输入高/宽，0x0C 配置通道数。 */
@@ -489,7 +689,7 @@ static int run_pool(uint32_t second)
     }
 
     memory_fence();
-    reg_write(POOL_BASE, 1u);
+    reg_write(POOL_BASE, 1u | IRQ_ENABLE_BIT);
 
     if (wait_accelerator(POOL_BASE))
     {
@@ -569,6 +769,7 @@ static int run_fc(uint32_t layer)
         return 1;
     }
 
+    prepare_completion(IRQ_FC);
     reg_write(FC_BASE + STATUS, DONE | ERROR);
 
     /*
@@ -591,7 +792,7 @@ static int run_fc(uint32_t layer)
     memory_fence();
 
     /* bit0 为启动，bit2 为 ReLU：FC1/2 写 5，FC3 写 1，保留负数分类分数。 */
-    reg_write(FC_BASE, layer == 2u ? 1u : 5u);
+    reg_write(FC_BASE, (layer == 2u ? 1u : 5u) | IRQ_ENABLE_BIT);
 
     if (wait_accelerator(FC_BASE))
     {
@@ -636,8 +837,9 @@ int cnn_main(void)
     uint32_t status;
     uint32_t prediction = 0u;
     uint32_t label;
+    uint32_t elapsed_cycles;
 
-    /* 第一步：采用轮询模式，检查 DMA 和三个协处理器是否空闲。 */
+    /* 第一步：暂时屏蔽中断，检查 DMA 和三个协处理器是否空闲。 */
     disable_interrupts();
     uart_puts("\r\nacc_demo trained INT8 model\r\n");
 
@@ -669,6 +871,13 @@ int cnn_main(void)
         return 1;
     }
 
+#if CNN_USE_INTERRUPTS
+    enable_interrupts();
+    uart_puts("Completion mode: machine external interrupts\r\n");
+#else
+    uart_puts("Completion mode: MMIO polling\r\n");
+#endif
+
     /*
      * 第三步：按网络顺序执行七层，每层完成后回读和校验。
      * || 从左到右执行，某层返回 1 后停止，不继续启动后面的层。
@@ -685,6 +894,30 @@ int cnn_main(void)
         uart_puts("CNN INFERENCE FAIL\r\n");
         return 1;
     }
+
+    disable_interrupts();
+    /*
+     * 硬件在第一次 DMA 读启动时计时，第七次成功写回时停止并保持。
+     * 此区间包含层间软件校验和串口日志；不包含摄像头采集。
+     * 此处只读一次，下面的串口输出不会增加已经停止的计数值。
+     */
+    memory_fence();
+    elapsed_cycles = reg_read(TIME_COUNTER);
+    uart_puts("CNN elapsed cycles: ");
+    uart_u32_decimal(elapsed_cycles, 0u);
+    uart_puts("\r\nCNN elapsed time (100 MHz): ");
+    uart_u32_decimal(elapsed_cycles, 5u);
+    uart_puts(" ms\r\n");
+
+#if CNN_USE_INTERRUPTS
+    uart_puts("IRQ counts RD/WR/Conv/Pool/FC:");
+    for (i = 0u; i < IRQ_SLOT_COUNT; ++i)
+    {
+        uart_putc(' ');
+        uart_number((int32_t)irq_counts[i]);
+    }
+    uart_puts("\r\n");
+#endif
 
     /* 第四步：按有符号 INT8 比较十个分类分数，最大值对应预测类别。 */
     uart_puts("\r\nFinal INT8 scores:\r\n");

@@ -353,6 +353,48 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
+
+reg [`DataBus] time_counter;
+reg [2:0] wr_done_cnt;
+reg timer_running;
+wire timer_stop;
+
+assign timer_stop =
+    timer_running &&
+    wr_desc_sts_valid &&
+    (wr_desc_sts_error == 4'd0) &&
+    (wr_done_cnt == 3'd6);
+
+always @(posedge clk or negedge rst_n)begin
+    if(!rst_n)begin
+        timer_running <= 'd0;
+    end
+    else if(start_pulse_rd && !timer_running && (wr_done_cnt == 3'd0))begin
+        timer_running <= 1'b1;
+    end
+    else if(timer_stop)begin
+        timer_running <= 'd0;
+    end
+end
+
+always @(posedge clk or negedge rst_n)begin
+    if(!rst_n)begin
+        wr_done_cnt <= 'd0;
+    end
+    else if(timer_running && wr_desc_sts_valid && (wr_desc_sts_error == 4'd0))begin
+        wr_done_cnt <= wr_done_cnt + 1'b1;
+    end
+end
+
+always @(posedge clk or negedge rst_n)begin
+    if(!rst_n)begin
+        time_counter <= 'd0;
+    end
+    else if(timer_running)begin
+        time_counter <= time_counter + 1'b1;
+    end
+end
+
 always @(posedge clk or negedge rst_n)begin
     if(!rst_n)begin
         dma_src <= 'd0;
@@ -428,6 +470,8 @@ always @(posedge clk or negedge rst_n)begin
 
                             `DMA_WR_BYTE_OFFSET_ADDR:
                                 dma_rdata_q <= dma_byte_offset_wr;
+                            `TIME_COUNTER:
+                                    dma_rdata_q <= time_counter;
                             default:
                                 dma_rdata_q <= 32'b0;
                         endcase

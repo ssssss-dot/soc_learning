@@ -245,6 +245,7 @@
 `define DMA_IRQ_ENABLE_ADDR  32'h4000_4020//使能哪个中断，由外部程序配置
 `define DMA_RD_BYTE_OFFSET_ADDR 32'h4000_4024//判断每次搬运时的偏移
 `define DMA_WR_BYTE_OFFSET_ADDR 32'h4000_4028//判断每次搬运时的偏移
+`define TIME_COUNTER 32'h4000_4030//记录一张图片的处理时长
 
 //csr中断相关指令和寄存器
 `define CsrAddrBus 11:0

@@ -128,7 +128,7 @@ CPU 采用顺序五级流水，流水级之间使用寄存器保存指令信息�
 
 ICache 和 DCache 都是两路组相联、32 组、每行一个 32 位字，每个 Cache 的有效数据容量为 **256 字节**，不含 tag、valid 和替换状态。DCache 的 store 采用写穿方式，不依靠脏行回写把模型结果同步到 DDR。
 
-顶层把 `dma_irq | conv_irq | fc_irq | pool_irq` 汇总到机器外部中断输入，没有独立 PLIC。CPU 以 `mstatus.MIE`、`mie.MEIE` 控制是否响应；本次 CNN 程序关闭中断，轮询各模块状态。DMA 写 DDR 后仍会通过独立完成脉冲触发 DCache 失效，这条一致性通路不受软件中断使能影响。
+顶层把 `dma_irq | conv_irq | fc_irq | pool_irq` 汇总到机器外部中断输入，没有独立 PLIC。CPU 以 `mstatus.MIE`、`mie.MEIE` 控制是否响应。当前 CNN 程序默认使用机器外部中断保存完成事件，`build_cnn.py --polling` 可恢复原 MMIO 轮询；上面的既有上板截图来自原轮询版本，中断版本仍需单独上板验证。等待完成时可执行非阻塞的 `cnn_background_work()`；默认钩子为空闲循环，未实现 WFI 休眠。详见 [中断模式说明](cnn_test/INTERRUPTS.md)。DMA 写 DDR 后仍会通过独立完成脉冲触发 DCache 失效，这条一致性通路不受软件中断使能影响。
 
 编译目标使用 RV32I，不使用 M/C 扩展。自定义 CMP/CMPU 的指令定义见 `rtl/define.sv`；需要使用扩展时应由匹配的编译器或汇编生成。当前 FENCE/FENCE.I 译码仅传递标志，尚无独立的 Cache 刷新或总线排空单元，不能把它描述为完整的标准屏障实现。
 

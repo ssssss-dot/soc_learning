@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--model-dir", type=Path, default=ROOT / "soc_export_int8")
     parser.add_argument("--out-dir", type=Path, default=ROOT / "build" / "cnn")
     parser.add_argument("--march", default="rv32i", help="Use rv32i_zicsr if a newer LLVM requires it")
+    parser.add_argument("--polling", action="store_true", help="Use the original MMIO polling completion path")
     args = parser.parse_args()
     out = args.out_dir.resolve()
     assets = out / "assets"
@@ -59,6 +60,7 @@ def main():
                        "-mno-relax", "-msmall-data-limit=0", "-ffunction-sections",
                        "-fdata-sections", "-fno-jump-tables", "-I", str(assets),
                        "-c", str(ROOT / "cnn_inference.c"), "-o", str(obj)]
+    compile_command.insert(1, "-DCNN_USE_INTERRUPTS=" + ("0" if args.polling else "1"))
     subprocess.run(compile_command, check=True)
     subprocess.run([str(linker), "-m", "elf32lriscv", "--no-relax", "--gc-sections",
                     "-T", str(ROOT / "linker_cnn.ld"), "-Map=" + str(out / "cnn_inference.map"),
@@ -91,6 +93,7 @@ def main():
     merged[0x10000:] = model
     (out / "cnn_dmem.bin").write_bytes(loader_packet(bytes(merged), 0))
     (out / "build_info.json").write_text(json.dumps({
+        "completion_mode": "polling" if args.polling else "interrupts",
         "model_dir": str(args.model_dir.resolve()), "prediction": prediction, "label": label,
         "text_bytes": len(text), "program_data_bytes": len(program_data), "bss_bytes": bss_size,
         "model_bytes": len(model), "dmem_payload_bytes": len(merged), "stack_top": "0x80010000",
