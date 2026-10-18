@@ -1,7 +1,8 @@
+`include "define.sv"
 `default_nettype none
 
-// 半成品：只保留输入接口、已有数据连接和三个模块的基础例化。
-// 三个处理模块均使用 cam_pclk，clk 留待后续 CDC/DDR 部分使用。
+// 视频处理模块连接；尚未提供的控制信号和 AXI 写接口保留为空。
+// 打包和 FIFO 写侧使用 cam_pclk，FIFO 读侧使用 clk。
 module video_process_top #(
     parameter WAIT_FRAME = 10
 )(
@@ -74,9 +75,9 @@ streamScaler #(
     .dInValid(gray_ce && gray_active),
     .nextDin(),
     .start(),       // TODO：后续连接帧启动控制。
-    .dOut(),
-    .dOutValid(),
-    .nextDout(),    // TODO：后续连接下游取数控制。
+    .dOut(scaler_data),
+    .dOutValid(scaler_valid),
+    .nextDout(next_data),
     .inputDiscardCnt(8'd0),
     .inputXRes(INPUT_X_LAST),
     .inputYRes(INPUT_Y_LAST),
@@ -88,6 +89,38 @@ streamScaler #(
     .topFracOffset(14'd0),
     .nearestNeighbor(1'b0)
 );
+
+// 每四个 INT8 像素打包成一个 32 位字，并携带 keep、last。
+native2axis u_native2axis (
+    .cam_pclk(cam_pclk),
+    .rst_n(rst_n),
+    .data_i(scaler_data),
+    .data_valid_i(scaler_valid),
+    .next_data(next_data),
+    .fifo_in(fifo_wr_data),
+    .axis_ready(),              // TODO：FIFO 写侧接收条件。
+    .axis_valid(pack_valid),
+    .almost_full(fifo_almost_full)
+);
+
+async_fifo #(
+    .DATA_WIDTH(37),
+    .ADDR_WIDTH(8),
+    .DEPTH(256)
+) u_async_fifo (
+    .rd_clk(clk),
+    .wr_clk(cam_pclk),
+    .rst_n(rst_n),
+    .wr_data(fifo_wr_data),
+    .rd_data(),                 // TODO：连接 axis2axiw 的数据输入。
+    .wr_en(pack_valid),
+    .rd_en(),                   // TODO：连接 axis2axiw 的 FIFO 读请求。
+    .empty(),                   // TODO：连接 axis2axiw 的 FIFO 空标志输入。
+    .full(),                    // TODO：用于提供打包模块的写侧接收条件。
+    .almost_full(fifo_almost_full),
+    .rd_valid()                 // TODO：连接 axis2axiw 的返回数据有效输入。
+);
+
 
 endmodule
 
