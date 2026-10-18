@@ -1,5 +1,6 @@
 `include "define.sv"
 
+//一帧1024字节，一次传256拍，正好是axiburst的最大
 module axis2axiw#(
   parameter DATA_WIDTH = 37,
   parameter ADDR_WIDTH = 8,
@@ -10,7 +11,8 @@ module axis2axiw#(
 
     input  [DATA_WIDTH-1:0] fifo_wr_data,
     input data_valid,
-    output axis_ready,
+    output wire fifo_rd_en,
+    input  wire fifo_empty,
 
     // AXI4 写地址通道：本模块 -> crossbar
     output logic [`AXI_S_ID_WIDTH-1:0] m_axi_awid,
@@ -37,12 +39,23 @@ module axis2axiw#(
     input  wire                        m_axi_wready,
 
     // AXI4 写响应通道：crossbar -> 本模块
-    input  wire [`AXI_S_ID_WIDTH-1:0]   m_axi_bid,
+    input  wire [`AXI_S_ID_WIDTH-1:0]  m_axi_bid,
     input  wire [1:0]                  m_axi_bresp,
     input  wire                        m_axi_buser,
     input  wire                        m_axi_bvalid,
     output logic                       m_axi_bready
 );
+
+localparam [31:0] CAM_DDR_BASE = 32'h1002_0000;
+
+localparam IDLE = 2'd0;
+localparam WAIT_DATA = 2'd1;
+localparam SEND = 2'd2;
+localparam BACK = 2'd3;
+
+reg [1:0] state;
+reg [1:0] next_state;
+reg [8:0] cnt;
 
 wire [`DataBus] axis_data;
 wire [3:0] axis_keep;
@@ -62,6 +75,100 @@ assign m_axi_awprot   = 3'b010;     // [2]数据访问，[1]非安全访问，[0
 assign m_axi_awqos    = 4'd0;       // 默认 QoS 等级，实际仲裁策略由互连决定。
 assign m_axi_awregion = 4'd0;       // 默认区域编号，目标仍由地址译码决定。
 assign m_axi_awuser   = 1'b0;       // 不携带自定义写地址附加信息。
+
+// W 通道固定属性：当前每拍打包 4 个灰度像素，没有不足 4 字节的尾拍。
 assign m_axi_wuser    = 1'b0;       // 不携带自定义写数据附加信息。
+// WDATA、WVALID、WLAST 由后续发送逻辑驱动；WLAST 标记每个突发的最后一拍。
+
+assign m_axi_awlen   = 8'd255; 
+assign m_axi_awaddr  = CAM_DDR_BASE;
+
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        cnt <= 9'd0;
+    else if ((state == BACK) && m_axi_bvalid && m_axi_bready)
+        cnt <= 9'd0;             // 本帧响应结束，清零
+    else if (m_axi_wvalid && m_axi_wready)
+        cnt <= cnt + 9'd1;       // 只有数据握手成功才加一
+end
+
+always_ff@(posedge clk or negedge rst_n)begin
+  if(!rst_n)begin
+    state <= 'd0;
+  end
+  else begin
+    state <= next_state;
+  end
+end
+
+assign fifo_rd_en = rst_n && !fifo_empty && (state == IDLE);
+
+always_comb begin
+  next_state = state;
+  case(state)
+    IDLE:begin
+      if(fifo_rd_en)begin
+        next_state = WAIT_DATA;
+      end
+    end
+    WAIT_DATA:begin
+      if(data_valid)begin
+        next_state = SEND;
+      end
+    end 
+    SEND:begin
+      if(m_axi_wvalid && m_axi_wready)begin
+        if(cnt == 'd255)begin
+          next_state = BACK;
+        end
+        else begin
+          next_state = IDLE;
+        end
+      end
+    end
+    BACK:begin
+      if(m_axi_bvalid && m_axi_bready)begin
+        next_state = IDLE;
+      end
+    end
+  endcase
+end
+
+always_ff@(posedge clk or negedge rst_n)begin
+  if(!rst_n)begin
+    m_axi_wdata <= 'd0;
+    m_axi_wlast <= 'd0;
+    m_axi_wstrb <= 'd0;
+    m_axi_wvalid <= 'd0;
+  end
+  else begin
+    case(state)
+      WAIT_DATA:begin
+        if(data_valid)begin
+          m_axi_wdata <= axis_data;
+          m_axi_wlast <= axis_last;
+          m_axi_wstrb <= axis_keep;
+          m_axi_wvalid <= 1'b1;
+        end
+      end
+      SEND:begin
+        if (m_axi_wvalid && m_axi_wready)begin
+          m_axi_wvalid <= 1'b0;
+        end
+      end
+    endcase
+  end
+end
+
+assign m_axi_bready = rst_n && (state == BACK);
+
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        m_axi_awvalid <= 1'b0;
+    else if (fifo_rd_en && (cnt == 9'd0))
+        m_axi_awvalid <= 1'b1;   // 每帧第一次读取时启动地址发送
+    else if (m_axi_awvalid && m_axi_awready)
+        m_axi_awvalid <= 1'b0;
+end
 
 endmodule

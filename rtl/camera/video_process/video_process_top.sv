@@ -1,8 +1,8 @@
 `include "define.sv"
 `default_nettype none
 
-// 视频处理模块连接；尚未提供的控制信号和 AXI 写接口保留为空。
-// 打包和 FIFO 写侧使用 cam_pclk，FIFO 读侧使用 clk。
+// 打包和 FIFO 写侧使用 cam_pclk，FIFO 读侧和 AXI 写主接口使用 clk。
+// 帧控制器每100ms请求采集一帧；AXI写接口由soc_top连接crossbar。
 module video_process_top #(
     parameter WAIT_FRAME = 10
 )(
@@ -11,7 +11,37 @@ module video_process_top #(
     input wire       rst_n,
     input wire       cam_vsync,
     input wire       cam_href,
-    input wire [7:0] cam_data
+    input wire [7:0] cam_data,
+
+    // AXI4 写地址通道：video_process_top -> soc_top。
+    output wire [`AXI_S_ID_WIDTH-1:0] m_axi_awid,
+    output wire [7:0]                 m_axi_awlen,
+    output wire [2:0]                 m_axi_awsize,
+    output wire [1:0]                 m_axi_awburst,
+    output wire                       m_axi_awlock,
+    output wire [3:0]                 m_axi_awcache,
+    output wire [2:0]                 m_axi_awprot,
+    output wire [3:0]                 m_axi_awqos,
+    output wire [3:0]                 m_axi_awregion,
+    output wire                       m_axi_awuser,
+    output wire [`DataAddrBus]        m_axi_awaddr,
+    output wire                       m_axi_awvalid,
+    input  wire                       m_axi_awready,
+
+    // AXI4 写数据通道：video_process_top -> soc_top。
+    output wire [`DataBus]            m_axi_wdata,
+    output wire [3:0]                 m_axi_wstrb,
+    output wire                       m_axi_wlast,
+    output wire                       m_axi_wuser,
+    output wire                       m_axi_wvalid,
+    input  wire                       m_axi_wready,
+
+    // AXI4 写响应通道：soc_top -> video_process_top。
+    input  wire [`AXI_S_ID_WIDTH-1:0]  m_axi_bid,
+    input  wire [1:0]                 m_axi_bresp,
+    input  wire                       m_axi_buser,
+    input  wire                       m_axi_bvalid,
+    output wire                       m_axi_bready
 );
 
 localparam [7:0] INPUT_X_LAST  = 8'd159;
@@ -24,8 +54,24 @@ localparam [17:0] Y_SCALE = 18'd61440;
 
 wire        capture_ce, capture_vsync, capture_active;
 wire [23:0] capture_data;
-wire        gray_ce, gray_active;
+wire        gray_ce, gray_vsync, gray_active;
 wire [7:0]  gray_data;
+wire [7:0]  scaler_input_data;
+wire        scaler_start, scaler_input_valid;
+wire [7:0]  scaler_data;
+wire        scaler_valid, next_data;
+wire [36:0] fifo_wr_data, fifo_rd_data;
+wire        pack_valid, pack_ready;
+wire        fifo_full, fifo_almost_full, fifo_empty;
+wire        fifo_rd_en, fifo_rd_valid;
+
+wire [7:0] quant_data;//输入的int8要根据cnn的要求做量化
+wire [7:0] processed_gray;//将白纸黑字转换成mnist要求的黑纸白字
+assign processed_gray = 8'd255 - scaler_data;
+assign quant_data = {1'b0 , processed_gray[7:1]};
+
+// FIFO 接收条件同时反馈给打包模块，保证双方使用同一个写入握手。
+assign pack_ready = rst_n && !fifo_full;
 
 ov5640_capture_data #(
     .WAIT_FRAME(WAIT_FRAME)
@@ -52,9 +98,23 @@ gray_picture u_gray (
     .in_vid_active(capture_active),
     .in_vid_data(capture_data),
     .out_vid_ce(gray_ce),
-    .out_vid_vsync(),
+    .out_vid_vsync(gray_vsync),
     .out_vid_active(gray_active),
     .out_vid_data(gray_data)
+);
+
+video_capture_ctrl u_video_capture_ctrl (
+    .clk(clk),
+    .cam_pclk(cam_pclk),
+    .rst_n(rst_n),
+    .gray_ce(gray_ce),
+    .gray_vsync(gray_vsync),
+    .gray_active(gray_active),
+    .gray_data(gray_data),
+    .scaler_start(scaler_start),
+    .capture_active(), // 帧采集状态在ctrl内部使用。
+    .scaler_data(scaler_input_data),
+    .capture_enable(scaler_input_valid)
 );
 
 streamScaler #(
@@ -71,10 +131,10 @@ streamScaler #(
 ) u_scaler (
     .clk(cam_pclk),
     .rst(!rst_n),
-    .dIn(gray_data),
-    .dInValid(gray_ce && gray_active),
+    .dIn(scaler_input_data),
+    .dInValid(scaler_input_valid),
     .nextDin(),
-    .start(),       // TODO：后续连接帧启动控制。
+    .start(scaler_start),
     .dOut(scaler_data),
     .dOutValid(scaler_valid),
     .nextDout(next_data),
@@ -94,11 +154,11 @@ streamScaler #(
 native2axis u_native2axis (
     .cam_pclk(cam_pclk),
     .rst_n(rst_n),
-    .data_i(scaler_data),
+    .data_i(quant_data),
     .data_valid_i(scaler_valid),
     .next_data(next_data),
     .fifo_in(fifo_wr_data),
-    .axis_ready(),              // TODO：FIFO 写侧接收条件。
+    .axis_ready(pack_ready),
     .axis_valid(pack_valid),
     .almost_full(fifo_almost_full)
 );
@@ -112,13 +172,53 @@ async_fifo #(
     .wr_clk(cam_pclk),
     .rst_n(rst_n),
     .wr_data(fifo_wr_data),
-    .rd_data(),                 // TODO：连接 axis2axiw 的数据输入。
-    .wr_en(pack_valid),
-    .rd_en(),                   // TODO：连接 axis2axiw 的 FIFO 读请求。
-    .empty(),                   // TODO：连接 axis2axiw 的 FIFO 空标志输入。
-    .full(),                    // TODO：用于提供打包模块的写侧接收条件。
+    .rd_data(fifo_rd_data),
+    .wr_en(pack_valid && pack_ready),
+    .rd_en(fifo_rd_en),
+    .empty(fifo_empty),
+    .full(fifo_full),
     .almost_full(fifo_almost_full),
-    .rd_valid()                 // TODO：连接 axis2axiw 的返回数据有效输入。
+    .rd_valid(fifo_rd_valid)
+);
+
+axis2axiw #(
+    .DATA_WIDTH(37),
+    .ADDR_WIDTH(8),
+    .DEPTH(256)
+) u_axis2axiw (
+    .clk(clk),
+    .rst_n(rst_n),
+    .fifo_wr_data(fifo_rd_data), // 转换模块输入来自 FIFO 的读侧。
+    .data_valid(fifo_rd_valid),
+    .fifo_rd_en(fifo_rd_en),
+    .fifo_empty(fifo_empty),
+
+    .m_axi_awid(m_axi_awid),
+    .m_axi_awlen(m_axi_awlen),
+    .m_axi_awsize(m_axi_awsize),
+    .m_axi_awburst(m_axi_awburst),
+    .m_axi_awlock(m_axi_awlock),
+    .m_axi_awcache(m_axi_awcache),
+    .m_axi_awprot(m_axi_awprot),
+    .m_axi_awqos(m_axi_awqos),
+    .m_axi_awregion(m_axi_awregion),
+    .m_axi_awuser(m_axi_awuser),
+    .m_axi_awaddr(m_axi_awaddr),
+    .m_axi_awvalid(m_axi_awvalid),
+    .m_axi_awready(m_axi_awready),
+
+    .m_axi_wdata(m_axi_wdata),
+    .m_axi_wstrb(m_axi_wstrb),
+    .m_axi_wlast(m_axi_wlast),
+    .m_axi_wuser(m_axi_wuser),
+    .m_axi_wvalid(m_axi_wvalid),
+    .m_axi_wready(m_axi_wready),
+
+    .m_axi_bid(m_axi_bid),
+    .m_axi_bresp(m_axi_bresp),
+    .m_axi_buser(m_axi_buser),
+    .m_axi_bvalid(m_axi_bvalid),
+    .m_axi_bready(m_axi_bready)
 );
 
 
