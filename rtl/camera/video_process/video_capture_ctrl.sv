@@ -11,7 +11,11 @@ module video_capture_ctrl(
     output reg        scaler_start,
     output reg        capture_active,
     output wire [7:0] scaler_data,
-    output wire       capture_enable
+    output wire       capture_enable,
+
+    //clk时钟域，要做同步
+    input write_done,//写入ddr完成信号
+    input write_error//写入时发生错误
 );
 
 localparam [23:0] TIMER_MAX = 24'd9_999_999;
@@ -19,6 +23,7 @@ localparam [23:0] TIMER_MAX = 24'd9_999_999;
 localparam [1:0] IDLE       = 2'd0;
 localparam [1:0] WAIT_FRAME = 2'd1;
 localparam [1:0] CAPTURE    = 2'd2;
+localparam [1:0] WAIT_WRITE = 2'd3;//等待写入ddr完成
 
 reg [23:0] timer_cnt;
 reg        capture_req; // 翻转位，不再是单周期脉冲
@@ -43,6 +48,49 @@ assign scaler_data = gray_data;
 
 assign capture_enable =
     rst_n && capture_active && gray_ce && gray_active;
+
+//clk时钟域的写入标志，电平信号
+reg write_end_toggle;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        write_end_toggle <= 1'b0;
+    else if (write_done || write_error)
+        write_end_toggle <= ~write_end_toggle;
+end
+
+(* ASYNC_REG = "TRUE" *) reg write_end_d0;
+(* ASYNC_REG = "TRUE" *) reg write_end_d1;
+reg write_end_d2;
+
+wire write_end_pulse;
+
+assign write_end_pulse = write_end_d1 ^ write_end_d2;//转脉冲信号
+
+always @(posedge cam_pclk or negedge rst_n) begin
+    if (!rst_n) begin
+        write_end_d0 <= 1'b0;
+        write_end_d1 <= 1'b0;
+        write_end_d2 <= 1'b0;
+    end
+    else begin
+        write_end_d0 <= write_end_toggle;
+        write_end_d1 <= write_end_d0;
+        write_end_d2 <= write_end_d1;
+    end
+end
+
+//cam_pclk时钟域保存写事件的完成
+reg write_end_seen;
+
+always @(posedge cam_pclk or negedge rst_n) begin
+    if (!rst_n)
+        write_end_seen <= 1'b0;
+    else if ((state == WAIT_FRAME) && frame_begin)
+        write_end_seen <= 1'b0;  // 新一帧开始，清除上一帧状态
+    else if (write_end_pulse)
+        write_end_seen <= 1'b1;  // 本帧事务结束，保持记录
+end
 
 //--------------------------------------------------
 // 100MHz域：每100ms翻转一次请求
@@ -118,11 +166,17 @@ always @(posedge cam_pclk or negedge rst_n) begin
                     if (pixel_cnt == 15'd19199) begin
                         // 本次放行第19200个像素，然后关闭
                         capture_active <= 1'b0;
-                        state          <= IDLE;
+                        state          <= WAIT_WRITE;
                     end
                     else begin
                         pixel_cnt <= pixel_cnt + 1'b1;
                     end
+                end
+            end
+
+            WAIT_WRITE:begin
+                if(write_end_seen)begin
+                    state <= IDLE;  
                 end
             end
 

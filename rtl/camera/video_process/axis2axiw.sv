@@ -43,7 +43,26 @@ module axis2axiw#(
     input  wire [1:0]                  m_axi_bresp,
     input  wire                        m_axi_buser,
     input  wire                        m_axi_bvalid,
-    output logic                       m_axi_bready
+    output logic                       m_axi_bready,
+
+    output write_done,
+    output write_error,
+
+    //摄像头配置信号
+    output camera_req_ready,
+    input camera_req_valid,
+    output camera_rsp_valid,
+    input camera_rsp_ready,
+
+    //写摄像头寄存器
+    input [`DataBus] camera_wdata,
+    input [`DataAddrBus] camera_addr,
+    input [3:0] camera_wstrb,
+    input camera_we,
+
+    output reg [`DataBus] camera_rdata,
+
+    output camera_irq
 );
 
 localparam [31:0] CAM_DDR_BASE = 32'h1002_0000;
@@ -56,6 +75,9 @@ localparam BACK = 2'd3;
 reg [1:0] state;
 reg [1:0] next_state;
 reg [8:0] cnt;
+
+reg [`DataBus] camera_status;//记录中断和异常的寄存器，接在mmio
+reg  [`DataBus] camera_control;
 
 wire [`DataBus] axis_data;
 wire [3:0] axis_keep;
@@ -169,6 +191,127 @@ always_ff @(posedge clk or negedge rst_n) begin
         m_axi_awvalid <= 1'b1;   // 每帧第一次读取时启动地址发送
     else if (m_axi_awvalid && m_axi_awready)
         m_axi_awvalid <= 1'b0;
+end
+
+assign write_done = rst_n && (state == BACK) && m_axi_bvalid && m_axi_bready;
+assign write_error = write_done && (m_axi_bresp != 2'b00);
+
+//读写寄存器状态机
+localparam [1:0] IDLE_REG = 2'd0;
+localparam [1:0] REQ_REG = 2'd1;
+localparam [1:0] RSP_REG = 2'd2;
+localparam [1:0] DONE_REG = 2'd3;
+
+reg [1:0] reg_state;
+reg [1:0] reg_next_state;
+
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        reg_state <= IDLE_REG;
+    end
+    else begin
+        reg_state <= reg_next_state;
+    end
+end
+
+always_comb begin 
+    reg_next_state = reg_state;
+    case (reg_state) 
+        IDLE_REG: begin
+            reg_next_state = REQ_REG;
+        end
+        REQ_REG: begin
+            if(camera_req_valid && camera_req_ready)begin
+                reg_next_state = RSP_REG;
+            end
+        end
+        RSP_REG: begin
+            if(camera_rsp_valid && camera_rsp_ready)begin
+                reg_next_state = DONE_REG;
+            end
+        end
+        DONE_REG: begin
+            reg_next_state = IDLE_REG;
+        end
+    endcase
+end
+
+always_ff @(posedge clk or negedge rst_n)begin
+    if(!rst_n)begin
+        camera_control <= 'd0;
+        camera_rdata <= 'd0;
+    end
+    else begin
+        if(camera_req_valid && camera_req_ready)begin
+            if (camera_we) begin
+                case (camera_addr)
+                    `CAMERA_CONTROL_ADDR: begin
+                        case (camera_wstrb[0])
+                            1'b1: camera_control[7:0] <= camera_wdata[7:0];
+                            default: ;
+                        endcase
+
+                        case (camera_wstrb[1])
+                            1'b1: camera_control[15:8] <= camera_wdata[15:8];
+                            default: ;
+                        endcase
+
+                        case (camera_wstrb[2])
+                            1'b1: camera_control[23:16] <= camera_wdata[23:16];
+                            default: ;
+                        endcase
+
+                        case (camera_wstrb[3])
+                            1'b1: camera_control[31:24] <= camera_wdata[31:24];
+                            default: ;
+                        endcase
+                    end
+                endcase
+            end
+            else begin
+                case (camera_addr)
+                    `CAMERA_STATUS_ADDR: begin
+                        camera_rdata <= camera_status;
+                    end
+
+                    `CAMERA_CONTROL_ADDR: begin
+                        camera_rdata <= camera_control;
+                    end
+                endcase
+            end
+        end
+    end
+end
+
+assign camera_irq = camera_control[0] && (|camera_status[1:0]);
+assign camera_req_ready = rst_n && (reg_state == REQ_REG);
+assign camera_rsp_valid = rst_n && (reg_state == RSP_REG);
+
+//加入对第一位写一清零同时保存状态
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        camera_status <= 32'd0;
+    end
+    else begin
+        // 软件写1清除：[0]错误，[1]完成
+        if (camera_req_valid && camera_req_ready &&
+            camera_we &&
+            (camera_addr == `CAMERA_STATUS_ADDR) &&
+            camera_wstrb[0]) begin
+            if (camera_wdata[0])
+                camera_status[0] <= 1'b0;
+
+            if (camera_wdata[1])
+                camera_status[1] <= 1'b0;
+        end
+
+        // 没有新事件时保持；新事件优先于软件清除
+        if (write_done)
+            camera_status[1] <= 1'b1;
+
+        if (write_error)
+            camera_status[0] <= 1'b1;
+    end
 end
 
 endmodule

@@ -28,7 +28,13 @@ module soc_top(
     inout  [1:0]  c0_ddr4_dm_dbi_n,
     inout  [15:0] c0_ddr4_dq,
     inout  [1:0]  c0_ddr4_dqs_c,
-    inout  [1:0]  c0_ddr4_dqs_t
+    inout  [1:0]  c0_ddr4_dqs_t,
+
+    // 摄像头 → FPGA：图像数据
+    input         cam_pclk,   // 摄像头输出的像素时钟
+    input         cam_vsync,  // 帧同步
+    input         cam_href,   // 行内数据有效
+    input   [7:0] cam_data    // 8位并行数据，RGB565每个像素传两次
 );
 
 //给到外部的调试信号
@@ -470,6 +476,12 @@ wire [13:0] acc_pool_wr_addr;
 wire [`DataBus] acc_pool_wr_data;
 wire [3:0] acc_pool_wr_strb;
 
+wire camera_req_valid, camera_req_ready;
+wire camera_rsp_valid, camera_rsp_ready;
+wire [31:0] camera_addr, camera_wdata, camera_rdata;
+wire [3:0] camera_wstrb;
+wire camera_we, camera_irq;
+
 // BRAM arbiter <-> shared accelerator BRAM in DMA subsystem
 wire acc_rd_en;
 wire [13:0] acc_rd_addr;
@@ -482,7 +494,7 @@ wire [3:0] acc_wr_strb;
 
 // DMA, Conv, FC and Pool share the CPU machine-external interrupt input.
 wire accelerator_irq;
-assign accelerator_irq = dma_irq | conv_irq | fc_irq | pool_irq;
+assign accelerator_irq = dma_irq | conv_irq | fc_irq | pool_irq | camera_irq;
 
 // Driven by the arbiter from start through done, including pre-busy cycles.
 wire acc_bram_blocked;
@@ -507,9 +519,9 @@ wire axi_front_rst;
 assign axi_front_aresetn = rst_n && calib_done_100m;
 assign axi_front_rst     = ~axi_front_aresetn;
 
-// 0=ICache、1=DCache、2=Loader、3=UART打印、4=CPU MMIO、5=DMA
-// 当前输入ID为5位，Crossbar追加3位源编号，输出ID为8位。
-localparam AXI_S_COUNT = 6;
+// 0=ICache、1=DCache、2=Loader、3=UART
+// 4=CPU MMIO、5=DMA、6=摄像头
+localparam AXI_S_COUNT = 7;
 localparam AXI_M_COUNT = 3;
 taxi_axi_if #(
     .DATA_W (32),
@@ -1243,7 +1255,17 @@ mmio_router u_mmio_router (
     .pool_addr         (pool_addr),
     .pool_wstrb        (pool_wstrb),
     .pool_we           (pool_we),
-    .pool_rdata        (pool_rdata)
+    .pool_rdata        (pool_rdata),
+
+    .camera_req_ready    (camera_req_ready),
+    .camera_req_valid    (camera_req_valid),
+    .camera_rsp_valid    (camera_rsp_valid),
+    .camera_rsp_ready    (camera_rsp_ready),
+    .camera_wdata        (camera_wdata),
+    .camera_addr         (camera_addr),
+    .camera_wstrb        (camera_wstrb),
+    .camera_we           (camera_we),
+    .camera_rdata        (camera_rdata)
 );
 
 // 关闭s_axi[0]未使用的写通道；ICache只会发起AXI读事务。
@@ -1310,16 +1332,28 @@ taxi_axi_crossbar_3s #(
     .S_COUNT     (AXI_S_COUNT),
     .M_COUNT     (AXI_M_COUNT),
     .ADDR_W      (32),
-    .M_REGIONS   (1),
-    .M_BASE_ADDR ({
-        32'h4000_4000,
-        32'h4000_0000,
-        32'h0000_0000
+    .M_REGIONS   (2),
+    
+    .M_BASE_ADDR({
+        32'h4000_8000, // MMIO区域1
+        32'h4000_4000, // MMIO区域0
+
+        32'h0000_0000, // UART区域1：关闭，占位
+        32'h4000_0000, // UART区域0
+
+        32'h0000_0000, // DDR区域1：关闭，占位
+        32'h0000_0000  // DDR区域0
     }),
-    .M_ADDR_W ({
-        32'd14,
-        32'd12,
-        32'd30
+
+    .M_ADDR_W({
+        32'd14, // MMIO区域1
+        32'd14, // MMIO区域0
+
+        32'd0,  // UART区域1：关闭
+        32'd12, // UART区域0
+
+        32'd0,  // DDR区域1：关闭
+        32'd30  // DDR区域0
     })
 ) u_axi_crossbar (
     .clk      (clk),
@@ -1752,5 +1786,70 @@ dma_subsystem_top u_dma_subsystem_top(
     .m_axi_wr(s_axi[5]),
     .m_axi_rd(s_axi[5])
 );
+
+//摄像头采集部分主机例化
+video_process_top u_video_process_top (
+    .clk              (clk),
+    .cam_pclk         (cam_pclk),
+    .rst_n            (axi_front_aresetn),
+
+    .cam_vsync        (cam_vsync),
+    .cam_href         (cam_href),
+    .cam_data         (cam_data),
+
+    .m_axi_awid       (s_axi[6].awid),
+    .m_axi_awaddr     (s_axi[6].awaddr),
+    .m_axi_awlen      (s_axi[6].awlen),
+    .m_axi_awsize     (s_axi[6].awsize),
+    .m_axi_awburst    (s_axi[6].awburst),
+    .m_axi_awlock     (s_axi[6].awlock),
+    .m_axi_awcache    (s_axi[6].awcache),
+    .m_axi_awprot     (s_axi[6].awprot),
+    .m_axi_awqos      (s_axi[6].awqos),
+    .m_axi_awregion   (s_axi[6].awregion),
+    .m_axi_awuser     (s_axi[6].awuser),
+    .m_axi_awvalid    (s_axi[6].awvalid),
+    .m_axi_awready    (s_axi[6].awready),
+
+    .m_axi_wdata      (s_axi[6].wdata),
+    .m_axi_wstrb      (s_axi[6].wstrb),
+    .m_axi_wlast      (s_axi[6].wlast),
+    .m_axi_wuser      (s_axi[6].wuser),
+    .m_axi_wvalid     (s_axi[6].wvalid),
+    .m_axi_wready     (s_axi[6].wready),
+
+    .m_axi_bid        (s_axi[6].bid),
+    .m_axi_bresp      (s_axi[6].bresp),
+    .m_axi_buser      (s_axi[6].buser),
+    .m_axi_bvalid     (s_axi[6].bvalid),
+    .m_axi_bready     (s_axi[6].bready),
+
+    .camera_req_ready    (camera_req_ready),
+    .camera_req_valid    (camera_req_valid),
+    .camera_rsp_valid    (camera_rsp_valid),
+    .camera_rsp_ready    (camera_rsp_ready),
+    .camera_wdata        (camera_wdata),
+    .camera_addr         (camera_addr),
+    .camera_wstrb        (camera_wstrb),
+    .camera_we           (camera_we),
+    .camera_rdata        (camera_rdata),
+    .camera_irq          (camera_irq)
+
+);
+
+//摄像头只写，把axi读部分关了
+assign s_axi[6].arid     = '0;
+assign s_axi[6].araddr   = '0;
+assign s_axi[6].arlen    = '0;
+assign s_axi[6].arsize   = '0;
+assign s_axi[6].arburst  = '0;
+assign s_axi[6].arlock   = 1'b0;
+assign s_axi[6].arcache  = '0;
+assign s_axi[6].arprot   = '0;
+assign s_axi[6].arqos    = '0;
+assign s_axi[6].arregion = '0;
+assign s_axi[6].aruser   = '0;
+assign s_axi[6].arvalid  = 1'b0;
+assign s_axi[6].rready   = 1'b0;
 
 endmodule

@@ -355,6 +355,11 @@
 `define POOL_SIZE_ADDR         (`POOL_BASE_ADDR + 32'h08)// [15:0]输入宽度，[31:16]输入高度
 `define POOL_CHANNELS_ADDR     (`POOL_BASE_ADDR + 32'h0C)// 输入通道数
 
+//ov5640寄存器分配
+`define CAMERA_BASE_ADDR    32'h4000_8000
+`define CAMERA_CONTROL_ADDR (`CAMERA_BASE_ADDR + 32'h00)
+`define CAMERA_STATUS_ADDR  (`CAMERA_BASE_ADDR + 32'h04)
+
 //加速器共享64KB的ram
 `define RAM_SIZE 0:16383
 //ram地址分配

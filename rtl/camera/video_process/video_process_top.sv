@@ -1,5 +1,4 @@
 `include "define.sv"
-`default_nettype none
 
 // 打包和 FIFO 写侧使用 cam_pclk，FIFO 读侧和 AXI 写主接口使用 clk。
 // 帧控制器每100ms请求采集一帧；AXI写接口由soc_top连接crossbar。
@@ -12,6 +11,18 @@ module video_process_top #(
     input wire       cam_vsync,
     input wire       cam_href,
     input wire [7:0] cam_data,
+
+    // 摄像头 MMIO：clk 时钟域，直接连接内部 axis2axiw。
+    output wire                camera_req_ready,
+    input  wire                camera_req_valid,
+    output wire                camera_rsp_valid,
+    input  wire                camera_rsp_ready,
+    input  wire [`DataBus]      camera_wdata,
+    input  wire [`DataAddrBus]  camera_addr,
+    input  wire [3:0]           camera_wstrb,
+    input  wire                camera_we,
+    output wire [`DataBus]      camera_rdata,
+    output camera_irq,
 
     // AXI4 写地址通道：video_process_top -> soc_top。
     output wire [`AXI_S_ID_WIDTH-1:0] m_axi_awid,
@@ -37,7 +48,7 @@ module video_process_top #(
     input  wire                       m_axi_wready,
 
     // AXI4 写响应通道：soc_top -> video_process_top。
-    input  wire [`AXI_S_ID_WIDTH-1:0]  m_axi_bid,
+    input  wire [`AXI_S_ID_WIDTH-1:0] m_axi_bid,
     input  wire [1:0]                 m_axi_bresp,
     input  wire                       m_axi_buser,
     input  wire                       m_axi_bvalid,
@@ -65,6 +76,7 @@ wire        pack_valid, pack_ready;
 wire        fifo_full, fifo_almost_full, fifo_empty;
 wire        fifo_rd_en, fifo_rd_valid;
 
+wire write_done, write_error;
 wire [7:0] quant_data;//输入的int8要根据cnn的要求做量化
 wire [7:0] processed_gray;//将白纸黑字转换成mnist要求的黑纸白字
 assign processed_gray = 8'd255 - scaler_data;
@@ -114,7 +126,9 @@ video_capture_ctrl u_video_capture_ctrl (
     .scaler_start(scaler_start),
     .capture_active(), // 帧采集状态在ctrl内部使用。
     .scaler_data(scaler_input_data),
-    .capture_enable(scaler_input_valid)
+    .capture_enable(scaler_input_valid),
+    .write_done(write_done),
+    .write_error(write_error)
 );
 
 streamScaler #(
@@ -218,10 +232,22 @@ axis2axiw #(
     .m_axi_bresp(m_axi_bresp),
     .m_axi_buser(m_axi_buser),
     .m_axi_bvalid(m_axi_bvalid),
-    .m_axi_bready(m_axi_bready)
+    .m_axi_bready(m_axi_bready),
+    .write_done(write_done),
+    .write_error(write_error),
+
+    .camera_req_ready(camera_req_ready),
+    .camera_req_valid(camera_req_valid),
+    .camera_rsp_valid(camera_rsp_valid),
+    .camera_rsp_ready(camera_rsp_ready),
+    .camera_wdata(camera_wdata),
+    .camera_addr(camera_addr),
+    .camera_wstrb(camera_wstrb),
+    .camera_we(camera_we),
+    .camera_rdata(camera_rdata),
+    .camera_irq(camera_irq)
+
 );
 
 
 endmodule
-
-`default_nettype wire
