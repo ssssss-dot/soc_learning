@@ -51,8 +51,8 @@ module streamScaler #(
 parameter	DATA_WIDTH =			8,		//Width of input/output data
 parameter	CHANNELS =				1,		//Number of channels of DATA_WIDTH, for color images
 parameter 	DISCARD_CNT_WIDTH =		8,		//Width of inputDiscardCnt
-parameter	INPUT_X_RES_WIDTH =		8,	//160 input columns; line RAM address width
-parameter	INPUT_Y_RES_WIDTH =		7,	//120 rows
+parameter	INPUT_X_RES_WIDTH =		8,	//128 input columns; retain the existing line RAM address width
+parameter	INPUT_Y_RES_WIDTH =		7,	//128 rows, addressed from 0 to 127
 parameter	OUTPUT_X_RES_WIDTH =	5,	//32 columns
 parameter	OUTPUT_Y_RES_WIDTH =	5,	//32 rows
 parameter	FRACTION_BITS =			8,		//Number of bits for fractional component of coefficients.

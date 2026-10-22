@@ -50,20 +50,10 @@ localparam DC_RESP     = 2'd3;//返回给if
 reg [1:0] state;
 reg [1:0] next_state;
 
-//将一直拉高的dma_irq变为脉冲信号（防止多次重置）
-reg dma_irq_d;
+//外部写后dcache要做无效
 wire dma_irq_pulse;
 
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        dma_irq_d <= 1'b0;
-    end
-    else begin
-        dma_irq_d <= dma_irq;
-    end
-end
-
-assign dma_irq_pulse = dma_irq && !dma_irq_d;
+assign dma_irq_pulse = dma_irq;
 
 reg invalidate_pending;//脉冲信号到来时如果不是空闲状态就等dcache本次操作完成后重置，拉高该信号一直到下一个idle才开始清零
 wire invalidate_now;

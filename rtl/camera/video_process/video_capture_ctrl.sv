@@ -163,8 +163,8 @@ always @(posedge cam_pclk or negedge rst_n) begin
             CAPTURE: begin
                 // 仅统计实际放行的有效灰度像素
                 if (capture_enable) begin
-                    if (pixel_cnt == 15'd19199) begin
-                        // 本次放行第19200个像素，然后关闭
+                    if (pixel_cnt == 15'd16383) begin
+                        // Include pixel 16384 (128x128), then stop this frame.
                         capture_active <= 1'b0;
                         state          <= WAIT_WRITE;
                     end

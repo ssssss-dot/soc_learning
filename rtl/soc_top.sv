@@ -30,11 +30,17 @@ module soc_top(
     inout  [1:0]  c0_ddr4_dqs_c,
     inout  [1:0]  c0_ddr4_dqs_t,
 
-    // 摄像头 → FPGA：图像数据
-    input         cam_pclk,   // 摄像头输出的像素时钟
-    input         cam_vsync,  // 帧同步
-    input         cam_href,   // 行内数据有效
-    input   [7:0] cam_data    // 8位并行数据，RGB565每个像素传两次
+    // Camera hardware controls and SCCB configuration interface.
+    output        cam_rst_n,
+    output        cam_pwdn,
+    inout         cam_scl,
+    inout         cam_sda,
+
+    // 摄像头MIPI输入：一对时钟、两对数据lane。
+    input         mipi_clk_p,
+    input         mipi_clk_n,
+    input   [1:0] mipi_data_p,
+    input   [1:0] mipi_data_n
 );
 
 //给到外部的调试信号
@@ -56,6 +62,20 @@ assign halt_cpu = 1'b0;
 
 //ibufds得到的单口时钟
 wire clk;
+
+// Camera configuration reset follows board rst_n, with synchronous release.
+wire cam_config_rst_n;
+(* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] cam_config_reset_sync;
+
+// MIPI reference is generated internally; it is not a package pin.
+wire clk_200m;
+wire mipi_ref_clk_raw;
+wire mipi_ref_clk_fb;
+wire mipi_ref_pll_locked;
+wire mipi_reset_release_n;
+(* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] mipi_lock_sync;
+reg [4:0] mipi_reset_count;
+reg mipi_video_rst_n;
  
 // Ctrl 相关信号
 wire        if_req;
@@ -481,6 +501,15 @@ wire camera_rsp_valid, camera_rsp_ready;
 wire [31:0] camera_addr, camera_wdata, camera_rdata;
 wire [3:0] camera_wstrb;
 wire camera_we, camera_irq;
+wire camera_write_done;
+
+// 摄像头配置和PHY状态，保留为内部信号，便于仿真或后续ILA观察。
+wire cam_config_done;
+wire cam_config_write_done;
+wire cam_config_write_error;
+wire cam_config_busy;
+wire mipi_pll_lock;
+wire mipi_system_rst;
 
 // BRAM arbiter <-> shared accelerator BRAM in DMA subsystem
 wire acc_rd_en;
@@ -499,6 +528,8 @@ assign accelerator_irq = dma_irq | conv_irq | fc_irq | pool_irq | camera_irq;
 // Driven by the arbiter from start through done, including pre-busy cycles.
 wire acc_bram_blocked;
 
+wire dcache_invalid;
+assign dcache_invalid = dma_wr_done_pulse | camera_write_done;
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         calib_sync_ff1 <= 1'b0;
@@ -1026,7 +1057,7 @@ mem_stage u_mem_stage(
     .mmio_rsp_rdata(mmio_rsp_rdata),
 
     // 保留mem_stage的旧端口名；该输入仅传给DCache，不是CPU中断输入。
-    .dma_irq(dma_wr_done_pulse)
+    .dma_irq(dcache_invalid)
 
 
 );
@@ -1387,12 +1418,87 @@ ila_0 u_ila (
     .probe6(miss_count_i)
 );
 
+//vivado ip
 //把差分时钟转为单口时钟
 IBUFDS u_ibufds_sys_clk (
     .I (sys_clk_p),
     .IB(sys_clk_n),
     .O (clk)
 );
+
+// Board reset asserts immediately; configuration starts after two 100 MHz edges.
+// This resets ROM/CTRL/I2C only; camera power/XCLK/RESET/PWDN remain board-level.
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        cam_config_reset_sync <= 2'b00;
+    else
+        cam_config_reset_sync <= {cam_config_reset_sync[0], 1'b1};
+end
+assign cam_config_rst_n = cam_config_reset_sync[1];
+
+// BEGIN MIPI REFERENCE CLOCK
+// UG974 (Vivado 2022.2): UltraScale+ PLLE4_BASE, CLKOUT0 -> global buffer.
+// PG202: dphy_clk_200M must be free-running, from the oscillator or one PLL/MMCM.
+// Board 100 MHz -> PLL VCO 1200 MHz -> 200 MHz; no cascaded clock managers.
+// RST comes from the board reset, NOT from LOCKED or the MIPI core reset.
+PLLE4_BASE #(
+    .CLKIN_PERIOD(10.000),
+    .DIVCLK_DIVIDE(1),
+    .CLKFBOUT_MULT(12),
+    .CLKOUT0_DIVIDE(6),
+    .CLKOUT0_DUTY_CYCLE(0.500),
+    .CLKOUT0_PHASE(0.000),
+    .STARTUP_WAIT("FALSE")
+) u_mipi_ref_pll (
+    .CLKIN(clk),
+    .CLKFBIN(mipi_ref_clk_fb),
+    .CLKFBOUT(mipi_ref_clk_fb),
+    .CLKOUT0(mipi_ref_clk_raw),
+    .CLKOUT0B(),
+    .CLKOUT1(),
+    .CLKOUT1B(),
+    .CLKOUTPHY(),
+    .CLKOUTPHYEN(1'b0),
+    .LOCKED(mipi_ref_pll_locked),
+    .PWRDWN(1'b0),
+    .RST(~rst_n)
+);
+
+BUFG u_bufg_mipi_ref_clk (
+    .I(mipi_ref_clk_raw),
+    .O(clk_200m)
+);
+
+// PG232: video_aresetn must be low for >=40 dphy_clk_200M cycles (200 ns).
+// Assert asynchronously on system/AXI reset or loss of reference PLL lock.
+// Synchronize release to video_aclk=clk, then wait 32 more cycles (320 ns).
+// Do NOT gate the reference clock with this reset or with the MIPI PLL outputs.
+assign mipi_reset_release_n = axi_front_aresetn && mipi_ref_pll_locked;
+
+always @(posedge clk or negedge mipi_reset_release_n) begin
+    if (!mipi_reset_release_n)
+        mipi_lock_sync <= 2'b00;
+    else
+        mipi_lock_sync <= {mipi_lock_sync[0], 1'b1};
+end
+
+always @(posedge clk or negedge mipi_reset_release_n) begin
+    if (!mipi_reset_release_n) begin
+        mipi_reset_count <= 5'd0;
+        mipi_video_rst_n <= 1'b0;
+    end
+    else if (!mipi_lock_sync[1]) begin
+        mipi_reset_count <= 5'd0;
+        mipi_video_rst_n <= 1'b0;
+    end
+    else if (mipi_reset_count == 5'd31) begin
+        mipi_video_rst_n <= 1'b1;
+    end
+    else begin
+        mipi_reset_count <= mipi_reset_count + 1'b1;
+    end
+end
+// END MIPI REFERENCE CLOCK
 
 //mig例化
 ddr4_0 u_ddr4_0 (
@@ -1565,6 +1671,9 @@ axi_clock_converter_0 u_axi_clock_converter_0 (
     .m_axi_rvalid     (c0_ddr4_s_axi_rvalid),
     .m_axi_rready     (c0_ddr4_s_axi_rready)
 );
+
+
+
 
 axi2native_uart u_axi2native_uart(
     .aclk(clk),
@@ -1787,15 +1896,36 @@ dma_subsystem_top u_dma_subsystem_top(
     .m_axi_rd(s_axi[5])
 );
 
-//摄像头采集部分主机例化
+// 摄像头寄存器配置：ROM -> CTRL -> I2C，使用现有100MHz系统时钟。
+config_top u_config_top (
+    .clk         (clk),
+    .rst_n       (cam_config_rst_n),
+    .receiver_ready(mipi_video_rst_n),
+    .cam_rst_n   (cam_rst_n),
+    .cam_pwdn    (cam_pwdn),
+    .scl         (cam_scl),
+    .sda         (cam_sda),
+    .config_done (cam_config_done),
+    .write_done  (cam_config_write_done),
+    .write_error (cam_config_write_error),
+    .busy        (cam_config_busy),
+    .start_enable(cpu_rst_n)
+);
+
+// Video uses 100 MHz; MIPI reset waits for the reference PLL to lock.
 video_process_top u_video_process_top (
     .clk              (clk),
-    .cam_pclk         (cam_pclk),
     .rst_n            (axi_front_aresetn),
+    .clk_200m         (clk_200m),
+    .video_clk        (clk),
+    .video_rst_n      (mipi_video_rst_n),
 
-    .cam_vsync        (cam_vsync),
-    .cam_href         (cam_href),
-    .cam_data         (cam_data),
+    .mipi_clk_p       (mipi_clk_p),
+    .mipi_clk_n       (mipi_clk_n),
+    .mipi_data_p      (mipi_data_p),
+    .mipi_data_n      (mipi_data_n),
+    .mipi_pll_lock    (mipi_pll_lock),
+    .mipi_system_rst  (mipi_system_rst),
 
     .m_axi_awid       (s_axi[6].awid),
     .m_axi_awaddr     (s_axi[6].awaddr),
@@ -1833,7 +1963,8 @@ video_process_top u_video_process_top (
     .camera_wstrb        (camera_wstrb),
     .camera_we           (camera_we),
     .camera_rdata        (camera_rdata),
-    .camera_irq          (camera_irq)
+    .camera_irq          (camera_irq),
+    .camera_write_done   (camera_write_done)
 
 );
 

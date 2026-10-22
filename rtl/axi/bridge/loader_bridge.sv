@@ -77,7 +77,7 @@ assign m_axi_awsize   = `AXI_SIZE_4B;
 assign m_axi_wlast    = `AXI_WLAST_SINGLE;
 assign m_axi_wuser    = `AXI_WUSER_DEFAULT;
 
-assign ldr_req_ready = (state == IDLE);
+assign ldr_req_ready = arst_n && (state == IDLE);
 
 assign m_axi_awvalid = (state == SEND) && !aw_done;
 assign m_axi_wvalid  = (state == SEND) && !w_done;

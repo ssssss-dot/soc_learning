@@ -351,8 +351,9 @@ always @(posedge clk or negedge rst_n) begin
             // CPU     : Released out of reset and no stall, in execute state 
             uart_rx_en_rg <= 1'b1 ;//允许FPGA接收电脑通过串口发来的字节 
             uart_tx_en_rg <= 1'b0 ;//关闭UART发送器
-            cpu_reset_rg  <= 1'b1 ;//释放cpu复位 
-            cpu_stall_rg  <= 1'b0 ;//取消暂停
+            //上电先暂停等下载
+            cpu_reset_rg  <= 1'b0 ;
+            cpu_stall_rg  <= 1'b1 ;
             o_init_done   <= 1'b1 ;//Initialization done            
          end
          
