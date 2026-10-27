@@ -166,7 +166,7 @@ static uint8_t model_byte(uint32_t address)
     return *(volatile const uint8_t *)(uintptr_t)address;
 }
 
-/* 同一块 DDR：CPU 从 0x80000000 访问，DMA 从 0x10000000 访问。 */
+/* 同一块 DDR：CPU 从 0x80000000 访问（虚拟），DMA 从 0x10000000 访问（物理）。 */
 //cpu地址转ddr地址
 static uint32_t output_ddr_address(void)
 {
@@ -1205,7 +1205,7 @@ int cnn_main(void)
     uint32_t status;
     int result = 1;
 
-    stop_interrupt_sources();
+    stop_interrupt_sources();//先关闭 CPU 全局中断和各外设中断使能
     uart_puts("\r\nacc_demo trained INT8 model\r\n");
     status = reg_read(DMA_STATUS);
     if (status & 3u)
@@ -1215,11 +1215,14 @@ int cnn_main(void)
          reg_read(FC_BASE + STATUS)) & BUSY)
         return fail("accelerator already busy", 1u);
 
+    //清除旧事件
     reg_write(DMA_CLEAR, 15u);
     reg_write(CONV_BASE + STATUS, DONE | ERROR);
     reg_write(POOL_BASE + STATUS, DONE | ERROR);
     reg_write(FC_BASE + STATUS, DONE | ERROR);
     reg_write(CAMERA_STATUS, CAMERA_EVENTS);
+
+//初始化两个软件计数器
 #if CNN_CAMERA_INPUT
     camera_sequence = 0u;
     camera_error_count = 0u;
@@ -1227,6 +1230,7 @@ int cnn_main(void)
     if (check_model())
         return 1;
 
+//选择中断模式或轮询模式
 #if CNN_USE_INTERRUPTS
     enable_interrupts();
     uart_puts("Completion mode: machine external interrupts\r\n");
@@ -1234,6 +1238,7 @@ int cnn_main(void)
     uart_puts("Completion mode: MMIO polling\r\n");
 #endif
 
+//等待并取得输入图片
 #if CNN_CAMERA_INPUT
     {
         uint32_t previous = 0u;
@@ -1245,8 +1250,11 @@ int cnn_main(void)
         uart_puts("Camera: 32x32 INT8, DDR=");
         uart_hex(CAMERA_DDR);
         uart_puts("\r\nWaiting for camera frames...\r\n");
+
+        //一直循环输出
         for (;;)
         {
+            //预热，传previou的地址改外面的参数，frame=0只用预热一次
             if (frames == 0u && warmup_camera(&previous))
                 break;
             if (snapshot_camera_frame(&previous))
@@ -1265,9 +1273,12 @@ int cnn_main(void)
 #if CNN_CAMERA_PREVIEW_INTERVAL > 0
             --preview_countdown;
 #endif
-#endif
+#endif 
+            //运行 CNN，打印预测，判断是否结束
+            //函数内部负责配置 DMA、配置计算模块、启动任务、等待完成及搬运结果。任何一层失败，都退出循环
             if (run_network())
                 break;
+            //整张图片成功计算后，推理数量加一，再打印结果
             ++frames;
             report_prediction(frames);
             if (frames == 1u)

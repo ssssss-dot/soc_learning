@@ -4,19 +4,19 @@
 
 当前网络为 `1×32×32 → Conv1 → Pool1 → Conv2 → Pool2 → FC1 → FC2 → FC3`，全连接维度为 `400→96→64→10`。工程已经完成一次真实训练权重的单张图片上板验证，七个计算阶段共 **8050 个 INT8 输出**与软件整数参考一致。现已接入 OV5645 双通道 MIPI CSI-2 摄像头，由硬件生成 32×32 INT8 输入，支持实时手写数字识别和串口图像预览。
 
-| 项目 | 当前实现 |
-| --- | --- |
-| 硬件顶层 | [rtl/soc_top.sv](rtl/soc_top.sv) |
-| CPU | 32 位、顺序执行、IF/ID/EX/MEM/WB 五级流水，RV32I 整数指令通路、机器模式 CSR、自定义 CMP/CMPU |
-| Cache | 独立 ICache/DCache，各 2 路、32 组、每行 1 个 32 位字 |
-| 互连 | 32 位 AXI4，7 个主机入口、3 个目标出口 |
-| 存储 | 外部 DDR4；共享 BRAM 为 16384×32 bit，即 64KiB |
-| Conv | 5×5、stride=1、无 padding，16×25 WS PE 阵列，INT32 部分和 |
-| FC | 16 路 OS PE，按 16 个输出分组，支持尾组不足 16 个输出 |
-| Pool | 固定 2×2、stride=2，有符号 INT8 最大池化，无整行缓存 |
-| 输出处理 | INT32 累加及偏置、整数 MULT/SHIFT 量化、舍入、可选 ReLU、INT8 限幅 |
-| Camera | OV5645、双数据 lane MIPI CSI-2、128×128 RGB565；4×4 平均池化和阈值二值化后输出 32×32 INT8 |
-| 已验证 FPGA | `xczu5ev-sfvc784-2-e`，CPU/加速器时钟 100MHz，Vivado 2022.2 |
+| 项目        | 当前实现                                                                                     |
+| ----------- | -------------------------------------------------------------------------------------------- |
+| 硬件顶层    | [rtl/soc_top.sv](rtl/soc_top.sv)                                                                |
+| CPU         | 32 位、顺序执行、IF/ID/EX/MEM/WB 五级流水，RV32I 整数指令通路、机器模式 CSR、自定义 CMP/CMPU |
+| Cache       | 独立 ICache/DCache，各 2 路、32 组、每行 1 个 32 位字                                        |
+| 互连        | 32 位 AXI4，7 个主机入口、3 个目标出口                                                       |
+| 存储        | 外部 DDR4；共享 BRAM 为 16384×32 bit，即 64KiB                                              |
+| Conv        | 5×5、stride=1、无 padding，16×25 WS PE 阵列，INT32 部分和                                  |
+| FC          | 16 路 OS PE，按 16 个输出分组，支持尾组不足 16 个输出                                        |
+| Pool        | 固定 2×2、stride=2，有符号 INT8 最大池化，无整行缓存                                        |
+| 输出处理    | INT32 累加及偏置、整数 MULT/SHIFT 量化、舍入、可选 ReLU、INT8 限幅                           |
+| Camera      | OV5645、双数据 lane MIPI CSI-2、128×128 RGB565；4×4 平均池化和阈值二值化后输出 32×32 INT8 |
+| 已验证 FPGA | `xczu5ev-sfvc784-2-e`，CPU/加速器时钟 100MHz，Vivado 2022.2                                |
 
 ## 1. 上板结果
 
@@ -143,20 +143,20 @@ soc_learning/
 
 CPU 采用顺序五级流水，流水级之间使用寄存器保存指令信息、运算数和控制信号。访存、数据依赖和分支跳转通过暂停、前递与冲刷协同处理。
 
-| 目录 / 文件 | 硬件职责 |
-| --- | --- |
-| `if/pc_reg.sv`、`mux_pc.sv` | PC 保存及下一 PC 选择，响应重定向、暂停和复位 |
-| `if/if_stage.sv`、`icache.sv`、`inst_ram.sv` | 取指阶段封装、指令缓存及取指存储接口 |
-| `id/id.sv`、`id_stage.sv` | 指令译码，生成寄存器地址、立即数、ALU/访存/CSR 控制 |
-| `id/reg_file.sv`、`id_req.sv` | 32 个通用寄存器及译码阶段依赖检查 |
-| `ex_stage/ex.sv`、`ex_stage.sv`、`ex_req.sv` | 整数运算、运算数前递、跳转重定向及执行阶段控制 |
-| `ex_stage/csr_file.sv` | `mstatus/mie/mtvec/mepc/mcause/mip`、机器外部中断和 `mret` |
-| `mem_stage/mem.sv`、`mem_stage.sv` | load/store 对齐与字节选择、请求/响应等待、DDR/UART/MMIO 分流 |
-| `mem_stage/dcache.sv` | 数据缓存、写穿通路和 DMA 写后失效 |
-| `wb_stage/wb_stage.sv` | 将 ALU、访存或 PC+4 等结果送回寄存器堆 |
-| `if_id.sv`、`id_ex.sv`、`ex_mem.sv`、`mem_wb.sv` | 相邻流水级之间的数据、控制和 valid 状态保存 |
-| `Ctrl.sv` | 汇总 Loader、访存、冒险、分支和中断请求，产生暂停与冲刷 |
-| `dbg_uart_tx.sv` | 独立的串口发送逻辑；当前 CPU 打印还经过 AXI UART 通路 |
+| 目录 / 文件                                              | 硬件职责                                                       |
+| -------------------------------------------------------- | -------------------------------------------------------------- |
+| `if/pc_reg.sv`、`mux_pc.sv`                          | PC 保存及下一 PC 选择，响应重定向、暂停和复位                  |
+| `if/if_stage.sv`、`icache.sv`、`inst_ram.sv`       | 取指阶段封装、指令缓存及取指存储接口                           |
+| `id/id.sv`、`id_stage.sv`                            | 指令译码，生成寄存器地址、立即数、ALU/访存/CSR 控制            |
+| `id/reg_file.sv`、`id_req.sv`                        | 32 个通用寄存器及译码阶段依赖检查                              |
+| `ex_stage/ex.sv`、`ex_stage.sv`、`ex_req.sv`       | 整数运算、运算数前递、跳转重定向及执行阶段控制                 |
+| `ex_stage/csr_file.sv`                                 | `mstatus/mie/mtvec/mepc/mcause/mip`、机器外部中断和 `mret` |
+| `mem_stage/mem.sv`、`mem_stage.sv`                   | load/store 对齐与字节选择、请求/响应等待、DDR/UART/MMIO 分流   |
+| `mem_stage/dcache.sv`                                  | 数据缓存、写穿通路和 DMA 写后失效                              |
+| `wb_stage/wb_stage.sv`                                 | 将 ALU、访存或 PC+4 等结果送回寄存器堆                         |
+| `if_id.sv`、`id_ex.sv`、`ex_mem.sv`、`mem_wb.sv` | 相邻流水级之间的数据、控制和 valid 状态保存                    |
+| `Ctrl.sv`                                              | 汇总 Loader、访存、冒险、分支和中断请求，产生暂停与冲刷        |
+| `dbg_uart_tx.sv`                                       | 独立的串口发送逻辑；当前 CPU 打印还经过 AXI UART 通路          |
 
 ICache 和 DCache 都是两路组相联、32 组、每行一个 32 位字，每个 Cache 的有效数据容量为 **256 字节**，不含 tag、valid 和替换状态。DCache 的 store 采用写穿方式，不依靠脏行回写把模型结果同步到 DDR。
 
@@ -168,45 +168,45 @@ ICache 和 DCache 都是两路组相联、32 组、每行一个 32 位字，每�
 
 ### `rtl/axi/bridge/` 与 `rtl/axi/axi_crossbar/`
 
-| 文件 / 子目录 | 职责 |
-| --- | --- |
-| `bridge/icache_bridge.sv` | 将取指 miss 请求转换为 AXI 读事务 |
-| `bridge/dcache_bridge.sv` | 数据访存到 AXI 的转换，并处理 CPU 数据地址映射 |
-| `bridge/loader_bridge.sv` | 将 Loader 下载写请求转换为 AXI 写事务 |
-| `bridge/mmio_bridge.sv` | CPU 通用寄存器请求到 AXI 的转换 |
-| `bridge/uart.sv` | CPU 串口打印请求到 AXI 的转换 |
-| `bridge/bridge_top.sv` | 汇总前端 Bridge 与各 AXI 入口 |
-| `bridge/axi2native_mmio.sv`、`axi2native_uart.sv` | 在目标端把 AXI 事务转换回模块的原生请求/响应 |
-| `axi_crossbar/rd/` | 读地址仲裁、地址译码、读数据返回及读通道寄存器 |
-| `axi_crossbar/wr/` | 写地址仲裁、写数据路由、写响应返回及写通道寄存器 |
-| `axi_crossbar/taxi_axi_crossbar_3s.sv` | 合并读写 Crossbar，顶层实际配置为 7 入 3 出 |
-| `mmio_router.sv` | 按地址把原生 MMIO 请求分派给 DMA、Conv、Pool、FC、Camera，并路由响应 |
+| 文件 / 子目录                                         | 职责                                                                 |
+| ----------------------------------------------------- | -------------------------------------------------------------------- |
+| `bridge/icache_bridge.sv`                           | 将取指 miss 请求转换为 AXI 读事务                                    |
+| `bridge/dcache_bridge.sv`                           | 数据访存到 AXI 的转换，并处理 CPU 数据地址映射                       |
+| `bridge/loader_bridge.sv`                           | 将 Loader 下载写请求转换为 AXI 写事务                                |
+| `bridge/mmio_bridge.sv`                             | CPU 通用寄存器请求到 AXI 的转换                                      |
+| `bridge/uart.sv`                                    | CPU 串口打印请求到 AXI 的转换                                        |
+| `bridge/bridge_top.sv`                              | 汇总前端 Bridge 与各 AXI 入口                                        |
+| `bridge/axi2native_mmio.sv`、`axi2native_uart.sv` | 在目标端把 AXI 事务转换回模块的原生请求/响应                         |
+| `axi_crossbar/rd/`                                  | 读地址仲裁、地址译码、读数据返回及读通道寄存器                       |
+| `axi_crossbar/wr/`                                  | 写地址仲裁、写数据路由、写响应返回及写通道寄存器                     |
+| `axi_crossbar/taxi_axi_crossbar_3s.sv`              | 合并读写 Crossbar，顶层实际配置为 7 入 3 出                          |
+| `mmio_router.sv`                                    | 按地址把原生 MMIO 请求分派给 DMA、Conv、Pool、FC、Camera，并路由响应 |
 
 `rd/` 和 `wr/` 保留了同名公共模块，例如 `taxi_axi_if`、`taxi_arbiter`、`taxi_penc`、`taxi_axi_crossbar_addr`。构建时公共定义只选一份，不能递归加入全部 `.sv` 后重复定义模块。`dma/3interface/axi.sv` 也定义 `taxi_axi_if`。
 
 ### `rtl/axi/dma/` 与 `rtl/axi/dma/3interface/`
 
-| 文件 | 职责 |
-| --- | --- |
-| `dma_ctrl.sv` | 保存 DDR 地址、长度、BRAM 偏移、状态和中断掩码，产生读写描述符 |
-| `taxi_axi_dma.sv` | 封装 DMA 读、写通路 |
-| `taxi_axi_dma_rd.sv` | 根据描述符从 DDR 发起 AXI 读，将数据输出为 AXI-Stream |
-| `taxi_axi_dma_wr.sv` | 接收 AXI-Stream，向 DDR 发起 AXI 写并返回描述符状态 |
-| `dma_subsystem_top.sv` | 连接控制器、DMA、AXI-Stream 和共享 BRAM，产生写完成失效通知 |
-| `3interface/axi.sv` | `taxi_axi_if`，包含 AXI 五通道及主从 modport |
-| `3interface/axis.sv` | `taxi_axis_if`，定义 data/valid/ready/keep/last 等流接口 |
-| `3interface/taxi_dma_desc_if.sv` | 定义源/目的地址、长度、tag、状态等描述符接口 |
+| 文件                               | 职责                                                           |
+| ---------------------------------- | -------------------------------------------------------------- |
+| `dma_ctrl.sv`                    | 保存 DDR 地址、长度、BRAM 偏移、状态和中断掩码，产生读写描述符 |
+| `taxi_axi_dma.sv`                | 封装 DMA 读、写通路                                            |
+| `taxi_axi_dma_rd.sv`             | 根据描述符从 DDR 发起 AXI 读，将数据输出为 AXI-Stream          |
+| `taxi_axi_dma_wr.sv`             | 接收 AXI-Stream，向 DDR 发起 AXI 写并返回描述符状态            |
+| `dma_subsystem_top.sv`           | 连接控制器、DMA、AXI-Stream 和共享 BRAM，产生写完成失效通知    |
+| `3interface/axi.sv`              | `taxi_axi_if`，包含 AXI 五通道及主从 modport                 |
+| `3interface/axis.sv`             | `taxi_axis_if`，定义 data/valid/ready/keep/last 等流接口     |
+| `3interface/taxi_dma_desc_if.sv` | 定义源/目的地址、长度、tag、状态等描述符接口                   |
 
 本工程中 **DMA 读 = DDR→BRAM，DMA 写 = BRAM→DDR**。DDR 大块数据直接通过 DMA 搬运，CPU 不逐个转运权重。读写方向有独立描述符与完成状态；共享存储区的访问顺序仍由当前软件串行调度保证。
 
 ### `rtl/coprocessor/` 下的共享存储与 PE
 
-| 文件 | 职责 |
-| --- | --- |
-| [bram_for_acc.sv](rtl/coprocessor/bram_for_acc.sv) | 双端口 64KiB 共享 BRAM，A 口连接 DMA 流，B 口连接仲裁后的计算核 |
+| 文件                                            | 职责                                                                           |
+| ----------------------------------------------- | ------------------------------------------------------------------------------ |
+| [bram_for_acc.sv](rtl/coprocessor/bram_for_acc.sv) | 双端口 64KiB 共享 BRAM，A 口连接 DMA 流，B 口连接仲裁后的计算核                |
 | [bram_arbiter.sv](rtl/coprocessor/bram_arbiter.sv) | 锁存 Conv/FC/Pool 使用权，选择读写通路及返回 valid，并阻止运行期间 DMA 写 BRAM |
-| [pe_ws.sv](rtl/coprocessor/pe_ws.sv) | Conv 使用的 weight-stationary PE，保存本地权重并转发特征、部分和和装载信息 |
-| [pe_os.sv](rtl/coprocessor/pe_os.sv) | FC 使用的 output-stationary PE，在本地累加点积并向下一列传递特征和 last |
+| [pe_ws.sv](rtl/coprocessor/pe_ws.sv)               | Conv 使用的 weight-stationary PE，保存本地权重并转发特征、部分和和装载信息     |
+| [pe_os.sv](rtl/coprocessor/pe_os.sv)               | FC 使用的 output-stationary PE，在本地累加点积并向下一列传递特征和 last        |
 
 共享 BRAM 每个口内部读写共用地址，写操作优先，同步读返回延迟一拍。字节写使能可以只更新一个字中的部分 INT8。
 
@@ -230,21 +230,21 @@ Conv2 的 6 个输入通道依次处理。同一输出像素在多个输入通�
 
 ### 文件职责
 
-| 文件 | 职责 |
-| --- | --- |
-| [conv_top.sv](rtl/coprocessor/conv/conv_top.sv) | 连接寄存器、状态机、读通路、缓存、PE 和结果后处理 |
-| `conv_reg.sv` | MMIO 配置、start 脉冲、busy/done/error 状态和中断 |
-| `conv_ctrl.sv` | 初始化、读权重、读输入、等待单通道完成、读偏置、等待输出及结束 |
-| `addr_gen.sv` | 根据 BRAM 基址、尺寸与输入通道生成读地址，报告请求发出完成 |
-| `read_arbiter.sv` | 将读请求类型延迟一拍，与 BRAM 返回 valid 对齐后分发给输入、权重或偏置接收端 |
-| `weight_cache.sv` | 将四个 32 位字拼成 16 个 INT8 权重，配合列编号装载阵列 |
-| `input_cache.sv` | 默认 256×32 bit，缓存一个输入通道，并按字节响应窗口生成器请求 |
-| `im2col.sv` | 根据输入行列推进构造 5×5 滑动窗口，产生 25 路特征和对应 valid |
-| `pe_array.sv` | 展开 16×25 个 `pe_ws`，连接权重、特征、部分和与装载控制 |
-| `result_ram_bank.sv` | 单个输出通道的 INT32 部分和 RAM，默认 784 项 |
-| `accumulation.sv` | 组织部分和 bank、跨输入通道累加、保存偏置、按 CHW 顺序串行输出 |
-| `int32_int8.sv` | 四级流水：锁存、64 位乘法、舍入右移、ReLU 与 INT8 限幅 |
-| `output_cache.sv` | 将连续 INT8 拼成 32 位字并写回共享 BRAM，报告最终写入完成 |
+| 文件                                         | 职责                                                                        |
+| -------------------------------------------- | --------------------------------------------------------------------------- |
+| [conv_top.sv](rtl/coprocessor/conv/conv_top.sv) | 连接寄存器、状态机、读通路、缓存、PE 和结果后处理                           |
+| `conv_reg.sv`                              | MMIO 配置、start 脉冲、busy/done/error 状态和中断                           |
+| `conv_ctrl.sv`                             | 初始化、读权重、读输入、等待单通道完成、读偏置、等待输出及结束              |
+| `addr_gen.sv`                              | 根据 BRAM 基址、尺寸与输入通道生成读地址，报告请求发出完成                  |
+| `read_arbiter.sv`                          | 将读请求类型延迟一拍，与 BRAM 返回 valid 对齐后分发给输入、权重或偏置接收端 |
+| `weight_cache.sv`                          | 将四个 32 位字拼成 16 个 INT8 权重，配合列编号装载阵列                      |
+| `input_cache.sv`                           | 默认 256×32 bit，缓存一个输入通道，并按字节响应窗口生成器请求              |
+| `im2col.sv`                                | 根据输入行列推进构造 5×5 滑动窗口，产生 25 路特征和对应 valid              |
+| `pe_array.sv`                              | 展开 16×25 个 `pe_ws`，连接权重、特征、部分和与装载控制                  |
+| `result_ram_bank.sv`                       | 单个输出通道的 INT32 部分和 RAM，默认 784 项                                |
+| `accumulation.sv`                          | 组织部分和 bank、跨输入通道累加、保存偏置、按 CHW 顺序串行输出              |
+| `int32_int8.sv`                            | 四级流水：锁存、64 位乘法、舍入右移、ReLU 与 INT8 限幅                      |
+| `output_cache.sv`                          | 将连续 INT8 拼成 32 位字并写回共享 BRAM，报告最终写入完成                   |
 
 ### 数据布局
 
@@ -268,19 +268,19 @@ FC 使用 16 个串接的 OS PE，一次计算最多 16 个输出神经元。输
 
 输入向量一次加载到 `input_cache`，每个输出组开始时重置读指针，重复读取同一份输入。权重按组连续读取，不在每组重新从整层权重起点开始。偏置每组装入最多 16 项，组内结果收齐并写回后再切换下一组。
 
-| 文件 | 职责 |
-| --- | --- |
-| [fc_top.sv](rtl/coprocessor/fc/fc_top.sv) | FC 模块连接与控制、数据通路整合 |
-| `fc_reg.sv` | 输入/输出特征数、BRAM 基址、MULT/SHIFT、ReLU 开关及状态寄存器 |
-| `fc_ctrl.sv` | 初始化、输入加载、每组偏置加载、计算、阵列排空、等待本组写回和整层完成 |
-| `addr_gen.sv` | 生成输入、连续权重和当前组偏置的 BRAM 读地址 |
-| `read_arbiter.sv` | 保存读请求类型，为 BRAM 返回数据产生分类 valid |
-| `input_cache.sv` | 100×32 bit，保存最多 400 个 INT8 特征，按请求输出单字节并支持组间重放 |
-| `weight_cache.sv` | 将四个读回字拼成 16 路权重，产生特征请求与阵列推进信号，并对各列做错拍 |
-| `bias_cache.sv` | 16×32 bit 偏置寄存器组，使用完成脉冲和保持的有效标志控制接收及消费 |
-| `pe_array.sv` | 展开 16 个 `pe_os`，转发特征和 last，产生各列最终点积的 valid |
-| `accumulation.sv` | 收集本组有效 PE 结果、加偏置，再按输出编号串行送往量化模块 |
-| `int32_int8.sv` | 四级量化流水及可选 ReLU，逐字节写回 BRAM，用 strobe 处理不足四字节的尾部 |
+| 文件                                   | 职责                                                                     |
+| -------------------------------------- | ------------------------------------------------------------------------ |
+| [fc_top.sv](rtl/coprocessor/fc/fc_top.sv) | FC 模块连接与控制、数据通路整合                                          |
+| `fc_reg.sv`                          | 输入/输出特征数、BRAM 基址、MULT/SHIFT、ReLU 开关及状态寄存器            |
+| `fc_ctrl.sv`                         | 初始化、输入加载、每组偏置加载、计算、阵列排空、等待本组写回和整层完成   |
+| `addr_gen.sv`                        | 生成输入、连续权重和当前组偏置的 BRAM 读地址                             |
+| `read_arbiter.sv`                    | 保存读请求类型，为 BRAM 返回数据产生分类 valid                           |
+| `input_cache.sv`                     | 100×32 bit，保存最多 400 个 INT8 特征，按请求输出单字节并支持组间重放   |
+| `weight_cache.sv`                    | 将四个读回字拼成 16 路权重，产生特征请求与阵列推进信号，并对各列做错拍   |
+| `bias_cache.sv`                      | 16×32 bit 偏置寄存器组，使用完成脉冲和保持的有效标志控制接收及消费      |
+| `pe_array.sv`                        | 展开 16 个 `pe_os`，转发特征和 last，产生各列最终点积的 valid          |
+| `accumulation.sv`                    | 收集本组有效 PE 结果、加偏置，再按输出编号串行送往量化模块               |
+| `int32_int8.sv`                      | 四级量化流水及可选 ReLU，逐字节写回 BRAM，用 strobe 处理不足四字节的尾部 |
 
 FC 权重格式是 `[输出组][输入特征][16个PE列]`：
 
@@ -298,14 +298,14 @@ FC 子模块实际模块名使用 `fc_` 前缀，文件名仍为 `addr_gen.sv`�
 
 Pool 对已经量化的 INT8 数据做固定 2×2、stride=2 的最大池化，不再执行乘法量化。当前实现依次请求一个窗口上方两个像素、下方两个像素，先得到两个行内最大值，再比较得到窗口最大值。内部只保存当前窗口的上方最大值与少量控制状态，不缓存整行。
 
-| 文件 | 职责 |
-| --- | --- |
-| [pool_top.sv](rtl/coprocessor/pool/pool_top.sv) | 连接 MMIO、控制器、地址转换、比较和写回模块，提供统一 BRAM 接口 |
-| `pool_reg.sv` | 保存高宽和通道数，产生 start，锁存 done/error，并产生中断 |
-| `pool_ctrl.sv` | `IDLE→START→CMP→DONE`，先初始化地址，再启动比较，最后等待实际写回完成 |
-| `cmp.sv` | 生成窗口上下两对像素的索引，按 data_valid 比较有符号 INT8，输出每个窗口的最大值 |
-| `addr_change.sv` | 将字节索引转换为 14 位字地址和半字选择；写回占用端口时保持待读请求 |
-| `wb.sv` | 从地址 0 开始逐字节写回，产生 strobe，最后一次有效写入后发出 write_done 并保持内部 finished 状态 |
+| 文件                                         | 职责                                                                                             |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| [pool_top.sv](rtl/coprocessor/pool/pool_top.sv) | 连接 MMIO、控制器、地址转换、比较和写回模块，提供统一 BRAM 接口                                  |
+| `pool_reg.sv`                              | 保存高宽和通道数，产生 start，锁存 done/error，并产生中断                                        |
+| `pool_ctrl.sv`                             | `IDLE→START→CMP→DONE`，先初始化地址，再启动比较，最后等待实际写回完成                       |
+| `cmp.sv`                                   | 生成窗口上下两对像素的索引，按 data_valid 比较有符号 INT8，输出每个窗口的最大值                  |
+| `addr_change.sv`                           | 将字节索引转换为 14 位字地址和半字选择；写回占用端口时保持待读请求                               |
+| `wb.sv`                                    | 从地址 0 开始逐字节写回，产生 strobe，最后一次有效写入后发出 write_done 并保持内部 finished 状态 |
 
 设输入形状为 `C×H×W`，输出位置为 `(c, oy, ox)`，则窗口左上角的字节索引为：
 
@@ -345,17 +345,17 @@ flowchart LR
     BRAM --> CNN["Conv / Pool / FC"]
 ```
 
-| 文件 / 目录 | 职责 |
-| --- | --- |
-| [config/configuration_rom.sv](rtl/camera/config/configuration_rom.sv) | OV5645 寄存器表，设置 RGB565、输出尺寸、曝光和写后延时 |
-| [config/ctrl.sv](rtl/camera/config/ctrl.sv) | 上电等待、RESET/PWDNB 时序、等待接收器就绪、逐项配置和错误停止 |
-| [config/config_top.sv](rtl/camera/config/config_top.sv)、`i2c_dri.sv` | 连接 ROM/CTRL/I2C，使用 SCCB/I2C 写入 16 位地址、8 位数据寄存器 |
-| [ip/README.md](rtl/camera/ip/README.md) | `mipi_csi2_rx_subsystem_0` 的配置与生成入口 |
-| [video_process/video_process_top.sv](rtl/camera/video_process/video_process_top.sv) | 连接接收、灰度、采集、池化、打包、FIFO 和 AXI 写通路 |
-| `video_process/axis2rgb888.sv`、`gray_picture.sv` | 将 MIPI 视频流中的 RGB565 转换为 RGB888，再生成 0～255 灰度 |
-| `video_process/video_capture_ctrl.sv`、`video_input_buffer.sv` | 按帧采集 16384 个有效源像素，并缓存、传递握手数据 |
-| [video_process/process_way/avg_pool_4x4.sv](rtl/camera/video_process/process_way/avg_pool_4x4.sv) | 非重叠 4×4 平均池化及固定阈值判断，输出 1024 个 INT8 像素 |
-| `video_process/native2axis.sv`、`aysnc_fifo/`、`axis2axiw.sv` | 像素打包、FIFO 缓冲和 AXI 突发写入，以及 Camera MMIO/中断 |
+| 文件 / 目录                                                                                    | 职责                                                            |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| [config/configuration_rom.sv](rtl/camera/config/configuration_rom.sv)                             | OV5645 寄存器表，设置 RGB565、输出尺寸、曝光和写后延时          |
+| [config/ctrl.sv](rtl/camera/config/ctrl.sv)                                                       | 上电等待、RESET/PWDNB 时序、等待接收器就绪、逐项配置和错误停止  |
+| [config/config_top.sv](rtl/camera/config/config_top.sv)、`i2c_dri.sv`                           | 连接 ROM/CTRL/I2C，使用 SCCB/I2C 写入 16 位地址、8 位数据寄存器 |
+| [ip/README.md](rtl/camera/ip/README.md)                                                           | `mipi_csi2_rx_subsystem_0` 的配置与生成入口                   |
+| [video_process/video_process_top.sv](rtl/camera/video_process/video_process_top.sv)               | 连接接收、灰度、采集、池化、打包、FIFO 和 AXI 写通路            |
+| `video_process/axis2rgb888.sv`、`gray_picture.sv`                                          | 将 MIPI 视频流中的 RGB565 转换为 RGB888，再生成 0～255 灰度     |
+| `video_process/video_capture_ctrl.sv`、`video_input_buffer.sv`                             | 按帧采集 16384 个有效源像素，并缓存、传递握手数据               |
+| [video_process/process_way/avg_pool_4x4.sv](rtl/camera/video_process/process_way/avg_pool_4x4.sv) | 非重叠 4×4 平均池化及固定阈值判断，输出 1024 个 INT8 像素      |
+| `video_process/native2axis.sv`、`aysnc_fifo/`、`axis2axiw.sv`                            | 像素打包、FIFO 缓冲和 AXI 突发写入，以及 Camera MMIO/中断       |
 
 每个 4×4 窗口使用 12 位累加，包含当前输入在内共 16 个像素，按以下规则生成一个输出：
 
@@ -389,14 +389,14 @@ output  = average < 128 ? 127 : 0
 
 ## 10. Loader：`rtl/loader/` 与 `download/`
 
-| 文件 | 职责 |
-| --- | --- |
-| `rtl/loader/loader.sv` | 下载协议解析、长度/偏移检查、IMEM/DMEM 写请求，以及 CPU 下载与启动控制 |
-| `rtl/loader/cdc_sync.sv` | 对跨时钟域控制信号进行同步 |
-| `rtl/loader/uart/uart_rx.sv` | 将串口接收波形恢复为字节和 valid |
-| `rtl/loader/uart/uart_tx.sv` | 将发送字节转换为串口波形 |
-| `rtl/loader/uart/top_uart.sv` | 封装 Loader 的 UART 收发 |
-| [download/peqflash.py](download/peqflash.py) | PC 端串口工具，发送两个下载包、检查应答并发出启动命令 |
+| 文件                                      | 职责                                                                   |
+| ----------------------------------------- | ---------------------------------------------------------------------- |
+| `rtl/loader/loader.sv`                  | 下载协议解析、长度/偏移检查、IMEM/DMEM 写请求，以及 CPU 下载与启动控制 |
+| `rtl/loader/cdc_sync.sv`                | 对跨时钟域控制信号进行同步                                             |
+| `rtl/loader/uart/uart_rx.sv`            | 将串口接收波形恢复为字节和 valid                                       |
+| `rtl/loader/uart/uart_tx.sv`            | 将发送字节转换为串口波形                                               |
+| `rtl/loader/uart/top_uart.sv`           | 封装 Loader 的 UART 收发                                               |
+| [download/peqflash.py](download/peqflash.py) | PC 端串口工具，发送两个下载包、检查应答并发出启动命令                  |
 
 Loader 通过 Bridge 和 AXI 将程序、模型数据写到 DDR，下载期间 CPU 保持复位，协议启动命令允许它运行。指令包使用 `C0×4`，数据包使用 `D0×4`，后面依次是大端 32 位长度、大端 32 位区内偏移、有效负载和 `E0×4` 后导。启动命令为 `B0`。有效负载每个 32 位字以高字节先发送，打包脚本会做相应字节转换，内存中的 INT32 偏置仍是小端排列。
 
@@ -406,31 +406,31 @@ Loader 通过 Bridge 和 AXI 将程序、模型数据写到 DDR，下载期间 C
 
 ### CPU、DMA 和共享 BRAM 的地址
 
-| 地址或范围 | 访问对象 |
-| --- | --- |
-| CPU `0x00000000` 起 | 经 ICache Bridge 访问 DDR 中的指令区 |
-| CPU `0x80000000` 起 | 经 DCache Bridge 映射到 AXI 数据区 `0x10000000` 起 |
+| 地址或范围                     | 访问对象                                                |
+| ------------------------------ | ------------------------------------------------------- |
+| CPU `0x00000000` 起          | 经 ICache Bridge 访问 DDR 中的指令区                    |
+| CPU `0x80000000` 起          | 经 DCache Bridge 映射到 AXI 数据区 `0x10000000` 起    |
 | AXI `0x00000000～0x3FFFFFFF` | Crossbar 的 DDR 译码窗口，实际可用容量由板卡与 MIG 决定 |
-| `0x40000000` | CPU 串口发送寄存器 |
-| `0x40004000～0x40004FFF` | DMA MMIO |
-| `0x40005000～0x40005FFF` | Conv MMIO |
-| `0x40006000～0x40006FFF` | Pool MMIO |
-| `0x40007000～0x40007FFF` | FC MMIO |
-| `0x40008000～0x40008FFF` | Camera MMIO |
-| AXI `0x10020000～0x100203FF` | Camera 的 1024 字节帧缓冲，软件经 DMA 搬到 BRAM 输入区 |
+| `0x40000000`                 | CPU 串口发送寄存器                                      |
+| `0x40004000～0x40004FFF`     | DMA MMIO                                                |
+| `0x40005000～0x40005FFF`     | Conv MMIO                                               |
+| `0x40006000～0x40006FFF`     | Pool MMIO                                               |
+| `0x40007000～0x40007FFF`     | FC MMIO                                                 |
+| `0x40008000～0x40008FFF`     | Camera MMIO                                             |
+| AXI `0x10020000～0x100203FF` | Camera 的 1024 字节帧缓冲，软件经 DMA 搬到 BRAM 输入区  |
 
 DMA SRC/DST 使用 AXI 地址，CPU 使用自身的数据指针。对当前数据区，两者的换算是 `dma_addr = cpu_addr - 0x80000000 + 0x10000000`，这条公式不用于转换 MMIO 地址。
 
 裸机程序将数据区低 64KiB 留给程序常量、参考数组、工作缓冲和栈，高 64KiB 用来放模型。模型 CPU 起点为 `0x80010000`、DMA 起点为 `0x10010000`，栈顶为 `0x80010000` 并向下增长。当前模型镜像为 50204 字节，完整 DMEM 包有效负载为 115740 字节。
 
-| 配置或接口 | 地址单位 |
-| --- | --- |
-| DMA SRC/DST | DDR/AXI 字节地址 |
-| DMA RD/WR BYTE OFFSET | 共享 BRAM 字节偏移，地址低 16 位参与转换 |
-| Conv INPUT_BASE / WEIGHT_BASE | 共享 BRAM 字节偏移 |
-| Conv BIAS_BASE | **共享 BRAM 的 32 位字地址** |
-| FC INPUT_BASE / WEIGHT_BASE / BIAS_BASE | 共享 BRAM 字节偏移，偏置同样如此 |
-| Conv/FC/Pool 对外 BRAM 读写地址 | 14 位字地址，即字节地址右移 2 位 |
+| 配置或接口                              | 地址单位                                 |
+| --------------------------------------- | ---------------------------------------- |
+| DMA SRC/DST                             | DDR/AXI 字节地址                         |
+| DMA RD/WR BYTE OFFSET                   | 共享 BRAM 字节偏移，地址低 16 位参与转换 |
+| Conv INPUT_BASE / WEIGHT_BASE           | 共享 BRAM 字节偏移                       |
+| Conv BIAS_BASE                          | **共享 BRAM 的 32 位字地址**       |
+| FC INPUT_BASE / WEIGHT_BASE / BIAS_BASE | 共享 BRAM 字节偏移，偏置同样如此         |
+| Conv/FC/Pool 对外 BRAM 读写地址         | 14 位字地址，即字节地址右移 2 位         |
 
 当前 `cnn_inference.c` 将输入放在 BRAM 字节偏移 `0x2000`、权重放在 `0x4000`、偏置放在 `0xF000`，输出从 `0` 开始。这是软件选择的分区，Conv/FC 基址可以重新配置，但需要四字节对齐、完整数据区不越界且不覆盖仍需使用的数据。DMA 长度使用字节数，描述符长度字段为 16 位。
 
@@ -438,39 +438,39 @@ DMA SRC/DST 使用 AXI 地址，CPU 使用自身的数据指针。对当前数�
 
 下面各表中的偏移均为字节，每个寄存器占 4 字节。具体读写握手和字节使能行为见对应 `*_reg.sv` 或 `dma_ctrl.sv`。
 
-| DMA 偏移 | 用途 |
-| --- | --- |
-| `0x00 / 0x04` | DDR 源地址 / DDR 目标地址 |
-| `0x08 / 0x18` | DDR→BRAM 长度 / BRAM→DDR 长度 |
-| `0x0C` | CONTROL：bit0 启动读，bit1 全局 IRQ 使能，bit2 启动写 |
-| `0x10` | STATUS：bit0/1 读写 busy，bit2/3 读写 done，bit4/5 读写 error，bit6 IRQ pending |
+| DMA 偏移               | 用途                                                                              |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| `0x00 / 0x04`        | DDR 源地址 / DDR 目标地址                                                         |
+| `0x08 / 0x18`        | DDR→BRAM 长度 / BRAM→DDR 长度                                                   |
+| `0x0C`               | CONTROL：bit0 启动读，bit1 全局 IRQ 使能，bit2 启动写                             |
+| `0x10`               | STATUS：bit0/1 读写 busy，bit2/3 读写 done，bit4/5 读写 error，bit6 IRQ pending   |
 | `0x14 / 0x1C / 0x20` | IRQ 原因清除 / 原因状态 / 原因掩码，低 4 位分别对应读结束、写结束、读错误、写错误 |
-| `0x24 / 0x28` | DDR→BRAM 目标偏移 / BRAM→DDR 源偏移 |
+| `0x24 / 0x28`        | DDR→BRAM 目标偏移 / BRAM→DDR 源偏移                                             |
 
 DMA 的启动事件由 CONTROL 写操作产生，软件应写入完整控制值，不对保留 START 位的读回值执行 `|=` 等读改写。轮询时同时检查 busy、done 和 error，不能仅凭中断原因中的“结束”位判断成功。
 
-| Conv 偏移 | 用途 |
-| --- | --- |
+| Conv 偏移       | 用途                                                |
+| --------------- | --------------------------------------------------- |
 | `0x00 / 0x04` | CONTROL / STATUS；CONTROL bit0 start、bit1 IRQ 使能 |
-| `0x08` | 输入宽度 `[15:0]`、高度 `[31:16]` |
-| `0x0C` | 输入通道 `[15:0]`、输出通道 `[31:16]` |
-| `0x10` | 偏置的 BRAM 字地址 |
-| `0x14 / 0x18` | 无符号 MULT / SHIFT，SHIFT 低 6 位有效 |
-| `0x1C / 0x20` | 输入 / 权重 BRAM 字节基址 |
+| `0x08`        | 输入宽度 `[15:0]`、高度 `[31:16]`               |
+| `0x0C`        | 输入通道 `[15:0]`、输出通道 `[31:16]`           |
+| `0x10`        | 偏置的 BRAM 字地址                                  |
+| `0x14 / 0x18` | 无符号 MULT / SHIFT，SHIFT 低 6 位有效              |
+| `0x1C / 0x20` | 输入 / 权重 BRAM 字节基址                           |
 
-| FC 偏移 | 用途 |
-| --- | --- |
-| `0x00 / 0x04` | CONTROL / STATUS；CONTROL bit0 start、bit1 IRQ 使能、bit2 ReLU 使能 |
-| `0x08 / 0x0C` | 输入 / 输出特征数 |
-| `0x10 / 0x14 / 0x18` | 输入 / 权重 / 偏置的 BRAM 字节基址 |
-| `0x1C` | 保留，输出始终从共享 BRAM 地址 0 开始 |
-| `0x20 / 0x24` | MULT / SHIFT |
+| FC 偏移                | 用途                                                                |
+| ---------------------- | ------------------------------------------------------------------- |
+| `0x00 / 0x04`        | CONTROL / STATUS；CONTROL bit0 start、bit1 IRQ 使能、bit2 ReLU 使能 |
+| `0x08 / 0x0C`        | 输入 / 输出特征数                                                   |
+| `0x10 / 0x14 / 0x18` | 输入 / 权重 / 偏置的 BRAM 字节基址                                  |
+| `0x1C`               | 保留，输出始终从共享 BRAM 地址 0 开始                               |
+| `0x20 / 0x24`        | MULT / SHIFT                                                        |
 
-| Pool 偏移 | 用途 |
-| --- | --- |
+| Pool 偏移       | 用途                                                |
+| --------------- | --------------------------------------------------- |
 | `0x00 / 0x04` | CONTROL / STATUS；CONTROL bit0 start、bit1 IRQ 使能 |
-| `0x08` | 输入宽度 `[15:0]`、高度 `[31:16]` |
-| `0x0C` | 通道数 |
+| `0x08`        | 输入宽度 `[15:0]`、高度 `[31:16]`               |
+| `0x0C`        | 通道数                                              |
 
 Conv/FC/Pool 的 STATUS bit0 为 busy，bit1 为锁存的 done，bit2 为锁存的 error；done/error 写 1 清除。内部完成脉冲和软件可读的保持状态是两种信号。运行期间保持配置稳定，合法尺寸和地址范围由软件保证，不能以当前 error 未拉高替代参数校验。
 
@@ -490,30 +490,30 @@ RTL 使用 64 位有符号乘积与算术右移。Conv 负数由 ReLU 归零；F
 
 ### `cnn_test/`：推理调度与模型下载包
 
-| 文件 | 职责 |
-| --- | --- |
-| [cnn_inference.c](cnn_test/cnn_inference.c) | 裸机入口、CSR/串口操作、DMA 配置、实时摄像头推理及预览；自检模式提供逐层比较 |
-| [linker_cnn.ld](cnn_test/linker_cnn.ld) | 指令区、程序数据区、模型预留区和栈顶布局；为栈至少保留 4KiB |
+| 文件                                                     | 职责                                                                              |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| [cnn_inference.c](cnn_test/cnn_inference.c)                 | 裸机入口、CSR/串口操作、DMA 配置、实时摄像头推理及预览；自检模式提供逐层比较      |
+| [linker_cnn.ld](cnn_test/linker_cnn.ld)                     | 指令区、程序数据区、模型预留区和栈顶布局；为栈至少保留 4KiB                       |
 | [export_layer_results.py](cnn_test/export_layer_results.py) | 从实际 INT8/INT32 参数重算整数网络，导出 CHW/神经元编号顺序的 CSV，不依赖 PyTorch |
-| [pack_model.py](cnn_test/pack_model.py) | 校验参数大小、合并模型、分配 DDR 地址，生成地址表与 D0 下载包 |
-| [prepare_cnn.py](cnn_test/prepare_cnn.py) | 重新生成 CSV、模型包、地址头文件和各层参考头文件，计算模型一致性校验值 |
-| [build_cnn.py](cnn_test/build_cnn.py) | 调用准备脚本、Clang 和 LLD，检查 ELF 区段与内存边界，生成最终 C0/D0 包 |
-| `model_layout.h/json`、`cnn_reference.h` | 现有已生成样例：地址/量化宏、布局清单、8050 个参考输出 |
-| `model_data.raw/bin` | 现有已生成样例：原始模型镜像与仅模型的 D0 包 |
+| [pack_model.py](cnn_test/pack_model.py)                     | 校验参数大小、合并模型、分配 DDR 地址，生成地址表与 D0 下载包                     |
+| [prepare_cnn.py](cnn_test/prepare_cnn.py)                   | 重新生成 CSV、模型包、地址头文件和各层参考头文件，计算模型一致性校验值            |
+| [build_cnn.py](cnn_test/build_cnn.py)                       | 调用准备脚本、Clang 和 LLD，检查 ELF 区段与内存边界，生成最终 C0/D0 包            |
+| `model_layout.h/json`、`cnn_reference.h`             | 现有已生成样例：地址/量化宏、布局清单、8050 个参考输出                            |
+| `model_data.raw/bin`                                   | 现有已生成样例：原始模型镜像与仅模型的 D0 包                                      |
 
 实际交叉构建会将本次配套头文件写到 `cnn_test/build/cnn/assets/`，通过 `-I` 指定该目录。`.h` 是编译输入；地址宏成为程序常量，参考数组成为程序数据。图片、权重、偏置的原始字节另外打包到模型区。
 
 程序每层完成后通过 DMA 将输出搬回 DDR。`--self-test` 模式逐个按有符号 INT8 比较，全部一致才启动下一层，发现错误则打印位置、实际值、预期值并停止；默认摄像头模式没有固定逐层答案，完成七层计算后打印实时分类和十个分数。DMA 写后 DCache 失效负责让 CPU 读取新数据，C 的 `volatile` 不代替硬件一致性处理。
 
-| 阶段 | 输入 → 输出 | 有效 INT8 输出数 |
-| --- | --- | ---: |
-| Conv1 + ReLU | `1×32×32 → 6×28×28` | 4704 |
-| Pool1 | `6×28×28 → 6×14×14` | 1176 |
-| Conv2 + ReLU | `6×14×14 → 16×10×10` | 1600 |
-| Pool2 | `16×10×10 → 16×5×5` | 400 |
-| FC1 + ReLU | `400 → 96` | 96 |
-| FC2 + ReLU | `96 → 64` | 64 |
-| FC3 | `64 → 10` | 10 |
+| 阶段         | 输入 → 输出                | 有效 INT8 输出数 |
+| ------------ | --------------------------- | ---------------: |
+| Conv1 + ReLU | `1×32×32 → 6×28×28`  |             4704 |
+| Pool1        | `6×28×28 → 6×14×14`  |             1176 |
+| Conv2 + ReLU | `6×14×14 → 16×10×10` |             1600 |
+| Pool2        | `16×10×10 → 16×5×5`  |              400 |
+| FC1 + ReLU   | `400 → 96`               |               96 |
+| FC2 + ReLU   | `96 → 64`                |               64 |
+| FC3          | `64 → 10`                |               10 |
 
 Flatten 保持 Pool2 的 CHW 顺序，不需要单独搬动或重排数据。FC3 关闭 ReLU，比较十个有符号分数并取最大值的编号作为类别，不需要 softmax。
 
@@ -541,13 +541,13 @@ CSV 中 `value_int8` 对应硬件写回值，`accum_int32` 是加偏置后的量
 
 ### `architecture diagram/`：架构设计资料
 
-| 文件 | 内容 |
-| --- | --- |
-| [soc架构图.drawio](architecture%20diagram/soc架构图.drawio) | CPU、DDR、总线和协处理器整体关系 |
-| [conv架构.drawio](architecture%20diagram/conv架构.drawio) | Conv 控制、缓存、窗口、阵列及后处理 |
-| [conv2_16x25_ws_mapping.svg](architecture%20diagram/conv2_16x25_ws_mapping.svg) | Conv2 的 16×25 WS 阵列与数据映射 |
-| [fc.drawio](architecture%20diagram/fc.drawio) | FC 分组和点积数据流 |
-| [pool.drawio](architecture%20diagram/pool.drawio) | Pool 架构设计过程记录 |
+| 文件                                                                         | 内容                                |
+| ---------------------------------------------------------------------------- | ----------------------------------- |
+| [soc架构图.drawio](architecture%20diagram/soc架构图.drawio)                     | CPU、DDR、总线和协处理器整体关系    |
+| [conv架构.drawio](architecture%20diagram/conv架构.drawio)                       | Conv 控制、缓存、窗口、阵列及后处理 |
+| [conv2_16x25_ws_mapping.svg](architecture%20diagram/conv2_16x25_ws_mapping.svg) | Conv2 的 16×25 WS 阵列与数据映射   |
+| [fc.drawio](architecture%20diagram/fc.drawio)                                   | FC 分组和点积数据流                 |
+| [pool.drawio](architecture%20diagram/pool.drawio)                               | Pool 架构设计过程记录               |
 
 draw.io 文件可以继续编辑；设计草图记录了演进过程，当前实际接线和模块职责以 RTL 为准，例如 Pool 已采用无整行缓存实现。
 
@@ -592,15 +592,15 @@ python3 cnn_test/build_cnn.py \
 
 重新训练后如参数在根目录 `soc_export_int8/`，将模型目录参数改为 `--model-dir soc_export_int8`。准备和打包脚本只依赖 Python 标准库；交叉编译使用 RV32I/ILP32，较新 LLVM 若要求显式 CSR 扩展，可传 `--march rv32i_zicsr`。
 
-| 生成文件，相对于 `cnn_test/build/cnn/` | 用途 |
-| --- | --- |
-| `cnn_inference.elf`、`.map`、`.o` | 裸机编译链接结果与内存布局 |
-| `cnn_iram.bin` | Loader C0 指令下载包 |
-| `cnn_dmem.bin` | Loader D0 完整数据包：程序常量、图片、权重、偏置和量化表 |
-| `cnn_program_dmem.bin` | 仅程序数据的中间包，不包含模型 |
-| `assets/model_layout.h/json` | 本次模型地址、长度、量化宏和分段清单 |
-| `assets/cnn_reference.h` | 本次模型的逐层参考与模型校验值 |
-| `assets/model_data.raw/bin` | 本次原始模型镜像及仅模型包 |
+| 生成文件，相对于 `cnn_test/build/cnn/` | 用途                                                     |
+| ---------------------------------------- | -------------------------------------------------------- |
+| `cnn_inference.elf`、`.map`、`.o`  | 裸机编译链接结果与内存布局                               |
+| `cnn_iram.bin`                         | Loader C0 指令下载包                                     |
+| `cnn_dmem.bin`                         | Loader D0 完整数据包：程序常量、图片、权重、偏置和量化表 |
+| `cnn_program_dmem.bin`                 | 仅程序数据的中间包，不包含模型                           |
+| `assets/model_layout.h/json`           | 本次模型地址、长度、量化宏和分段清单                     |
+| `assets/cnn_reference.h`               | 本次模型的逐层参考与模型校验值                           |
+| `assets/model_data.raw/bin`            | 本次原始模型镜像及仅模型包                               |
 
 构建会重新生成参数目录中的 `layer_results.csv`，再从该 CSV 生成参考头文件，避免把旧 CSV 当作新模型答案。Loader 使用封装后的 `.bin`，原始 `.raw` 和 ELF 不能直接作为这两个下载输入。
 
@@ -609,7 +609,7 @@ python3 cnn_test/build_cnn.py \
 先下载对应硬件的 `soc_top.bit`，等待 DDR 初始化完成。若在服务器编译，将生成的 `cnn_iram.bin`、`cnn_dmem.bin` 取回本机对应目录，再从仓库根目录执行：
 
 ```powershell
-py .\download\peqflash.py -serport COM4 -baud 115200 -imembin .\cnn_test\build\cnn\cnn_iram.bin -dmembin .\cnn_test\build\cnn\cnn_dmem.bin
+py .\download\peqflash.py -serport COM4 -baud 115200 -imembin .\cnn_iram.bin -dmembin .\cnn_dmem.bin.\cnn_test\build\cnn\cnn_dmem.bin
 ```
 
 `COM4` 替换为实际 Loader 串口，下载工具依赖 `pyserial`。在启动前打开 `dbg_uart_txd` 对应的调试串口，以 115200、8N1 观察输出：摄像头模式先打印预热信息，然后周期性打印输入预览和 `Frame ... prediction=... scores: ...`；`--self-test` 模式打印逐层比较及最终参考匹配结果。实时摄像头模式不会打印 8050 项固定图片参考全部匹配。
@@ -618,18 +618,18 @@ py .\download\peqflash.py -serport COM4 -baud 115200 -imembin .\cnn_test\build\c
 
 以下是 2026-10-15 一次完整 SoC 实现报告的记录，器件为 `xczu5ev-sfvc784-2-e`，包含 CPU、DDR 接口、DMA、三个计算核和调试逻辑。它们是该次构建的结果，早于后续 Camera 接入与平均池化预处理改动；不能作为当前摄像头版本的资源和时序结果，后续修改需要重新生成报告。
 
-| 指标 | 实现结果 |
-| --- | ---: |
-| CLB LUT | 62087 / 117120，53.01% |
-| CLB 寄存器 | 57553 / 234240，24.57% |
-| Block RAM Tile | 64 / 144，44.44% |
-| DSP | 35 / 1248，2.80% |
-| 全局 WNS / TNS | 0.222ns / 0ns |
-| 全局 WHS / THS | 0.010ns / 0ns |
-| 最差时钟检查裕量 WPWS | 0.039ns |
-| 100MHz `sys_clk_p` 域 WNS | 0.673ns |
-| 无时钟 / 内部未约束端点 | 0 / 0 |
-| 估算总片上功耗 | 1.100W，动态 0.730W、静态 0.370W |
+| 指标                        |                         实现结果 |
+| --------------------------- | -------------------------------: |
+| CLB LUT                     |           62087 / 117120，53.01% |
+| CLB 寄存器                  |           57553 / 234240，24.57% |
+| Block RAM Tile              |                 64 / 144，44.44% |
+| DSP                         |                 35 / 1248，2.80% |
+| 全局 WNS / TNS              |                    0.222ns / 0ns |
+| 全局 WHS / THS              |                    0.010ns / 0ns |
+| 最差时钟检查裕量 WPWS       |                          0.039ns |
+| 100MHz `sys_clk_p` 域 WNS |                          0.673ns |
+| 无时钟 / 内部未约束端点     |                            0 / 0 |
+| 估算总片上功耗              | 1.100W，动态 0.730W、静态 0.370W |
 
 全局最差建立路径属于 DDR 内部 300MHz 域，不能将全局 WNS 直接当作 CPU 的最高频率依据。功耗报告的 Confidence Level 为 **Low**，这里记录的是工具估算，不是实测板卡功耗。外部复位和 UART 等端口仍有未设置 I/O delay 的提示，需要按接口性质评估。
 
