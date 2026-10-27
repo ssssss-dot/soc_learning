@@ -2,22 +2,25 @@
 
 本工程使用 SystemVerilog 实现五级流水 CPU，并通过 AXI、DDR4、DMA 和共享 BRAM 连接 Conv、FC、Pool 三种计算单元。CPU 执行裸机 C 程序，负责配置与逐层调度；卷积、全连接和最大池化由硬件执行。
 
-当前网络为 `1×32×32 → Conv1 → Pool1 → Conv2 → Pool2 → FC1 → FC2 → FC3`，全连接维度为 `400→96→64→10`。工程已经完成一次真实训练权重的单张图片上板验证，七个计算阶段共 **8050 个 INT8 输出**与软件整数参考一致。
+当前网络为 `1×32×32 → Conv1 → Pool1 → Conv2 → Pool2 → FC1 → FC2 → FC3`，全连接维度为 `400→96→64→10`。工程已经完成一次真实训练权重的单张图片上板验证，七个计算阶段共 **8050 个 INT8 输出**与软件整数参考一致。现已接入 OV5645 双通道 MIPI CSI-2 摄像头，由硬件生成 32×32 INT8 输入，支持实时手写数字识别和串口图像预览。
 
 | 项目 | 当前实现 |
 | --- | --- |
 | 硬件顶层 | [rtl/soc_top.sv](rtl/soc_top.sv) |
 | CPU | 32 位、顺序执行、IF/ID/EX/MEM/WB 五级流水，RV32I 整数指令通路、机器模式 CSR、自定义 CMP/CMPU |
 | Cache | 独立 ICache/DCache，各 2 路、32 组、每行 1 个 32 位字 |
-| 互连 | 32 位 AXI4，6 个主机入口、3 个目标出口 |
+| 互连 | 32 位 AXI4，7 个主机入口、3 个目标出口 |
 | 存储 | 外部 DDR4；共享 BRAM 为 16384×32 bit，即 64KiB |
 | Conv | 5×5、stride=1、无 padding，16×25 WS PE 阵列，INT32 部分和 |
 | FC | 16 路 OS PE，按 16 个输出分组，支持尾组不足 16 个输出 |
 | Pool | 固定 2×2、stride=2，有符号 INT8 最大池化，无整行缓存 |
 | 输出处理 | INT32 累加及偏置、整数 MULT/SHIFT 量化、舍入、可选 ReLU、INT8 限幅 |
+| Camera | OV5645、双数据 lane MIPI CSI-2、128×128 RGB565；4×4 平均池化和阈值二值化后输出 32×32 INT8 |
 | 已验证 FPGA | `xczu5ev-sfvc784-2-e`，CPU/加速器时钟 100MHz，Vivado 2022.2 |
 
 ## 1. 上板结果
+
+### 固定图片逐层自检
 
 下面是实际串口截图，使用训练导出的图片、权重、INT32 偏置和各层量化参数：
 
@@ -27,6 +30,29 @@
 
 这是一张图片、一次配套模型包的验证记录。更换训练权重、图片或量化参数后，以当次构建生成的参考结果为准；该截图不代表完整 MNIST 测试集精度、推理吞吐率或任意形状支持情况。
 
+### OV5645 摄像头实时识别
+
+摄像头拍摄白纸上的手写数字 `5`，串口截图中第 4913～4939 个推理帧连续输出 `prediction=5`。以下为该截图中的实际结果节选：
+
+```text
+CAMERA_INPUT_BEGIN frame=4921 size=32x32 chars_per_pixel=2
+INT8 expected=0..127 min=0 max=127 out_of_range=0
+Levels low->high: [ .:-+*#@]; ? = outside 0..127
+```
+
+上述信息之后是 32×32 ASCII 图像；此处省略图像行，保留同次截图中的推理输出：
+
+```text
+CAMERA_INPUT_END
+Frame 4921 prediction=5 scores: 0 -2 -21 7 -28 20 2 2 9 -6
+Frame 4922 prediction=5 scores: -9 13 1 7 -45 15 5 8 11 -28
+Frame 4923 prediction=5 scores: -16 14 2 13 -52 21 2 9 5 -35
+```
+
+`scores` 从左到右对应数字 `0～9` 的十个有符号 INT8 分数；`prediction` 是最大分数对应的类别，不是概率。第 4921 帧的类别 `5` 得分为 `20`，高于其余类别。
+
+**拍摄时使用白纸黑字，手写数字的笔画要粗，建议用粗黑色记号笔，避免细笔画。** 数字应完整、居中，四周留白，避免手指、纸边或明显阴影进入画面。截图仍有额外前景和部分断笔，这次结果记录的是该场景下识别出 `5`，不作为完整测试集准确率。
+
 ## 2. 硬件总体架构
 
 ```mermaid
@@ -35,11 +61,12 @@ flowchart LR
     CPU --> DC["DCache / Bridge"]
     CPU --> IO["UART / MMIO Bridge"]
     LD["UART Loader"] --> LB["Loader Bridge"]
-    IC <--> AXI["AXI Crossbar：6 入 / 3 出"]
+    IC <--> AXI["AXI Crossbar：7 入 / 3 出"]
     DC <--> AXI
     IO <--> AXI
     LB <--> AXI
     DMA["DMA：AXI / AXI-Stream"] <--> AXI
+    CAM["OV5645 / MIPI RX / 图像预处理 / AXI 写"] --> AXI
     AXI <--> CDC["AXI Clock Converter"]
     CDC <--> MIG["DDR4 MIG / 外部 DDR"]
     AXI --> UART["AXI-to-Native UART / 调试串口"]
@@ -48,6 +75,7 @@ flowchart LR
     ROUTER -. 配置 .-> CONV["Conv：16×25 WS 阵列"]
     ROUTER -. 配置 .-> FC["FC：16 路 OS PE"]
     ROUTER -. 配置 .-> POOL["Pool：2×2 最大值比较"]
+    ROUTER -. 状态与中断配置 .-> CAM
     DMA <--> RAM["共享 BRAM：64KiB"]
     RAM <--> ARB["bram_arbiter"]
     ARB <--> CONV
@@ -57,7 +85,7 @@ flowchart LR
 
 实线表示数据或总线通路，虚线表示寄存器配置关系。CPU 的 UART 打印与通用 MMIO 在 Crossbar 上是两个独立入口，图中合并显示。
 
-Crossbar 的 6 个入口依次为 ICache、DCache、Loader、CPU UART、CPU MMIO、DMA；3 个出口依次为 DDR、UART、MMIO。文件名 `taxi_axi_crossbar_3s.sv` 沿用原名称，实际由 `soc_top` 参数化为 `S_COUNT=6`、`M_COUNT=3`。入口 AXI ID 为 5 位，追加 3 位来源编号后，出口 ID 为 8 位。
+Crossbar 的 7 个入口依次为 ICache、DCache、Loader、CPU UART、CPU MMIO、DMA、Camera；3 个出口依次为 DDR、UART、MMIO。Camera 作为独立 AXI 写主机接到 `s_axi[6]`。文件名 `taxi_axi_crossbar_3s.sv` 沿用原名称，实际由 `soc_top` 参数化为 `S_COUNT=7`、`M_COUNT=3`。入口 AXI ID 为 5 位，追加 3 位来源编号后，出口 ID 为 8 位。
 
 CPU、Bridge、DMA 和计算模块使用前端 `clk`。DDR 后端使用 MIG 的 `c0_ddr4_ui_clk`，由 `axi_clock_converter_0` 处理两个时钟域之间的 AXI 通路。CPU 的复位释放同时受板级复位、Loader 启动状态和 DDR 校准完成状态控制，Loader 与总线前端能在 CPU 尚未启动时工作。
 
@@ -68,7 +96,7 @@ CPU、Bridge、DMA 和计算模块使用前端 `clk`。DDR 后端使用 MIG 的 
 ```text
 soc_learning/
 ├── rtl/
-│   ├── soc_top.sv                 SoC 顶层与外部 DDR/UART 接口
+│   ├── soc_top.sv                 SoC 顶层与外部 DDR/UART/Camera 接口
 │   ├── define.sv                  指令、总线、地址和容量宏
 │   ├── core_cpu/
 │   │   ├── if/                    取指、PC、ICache
@@ -83,7 +111,11 @@ soc_learning/
 │   │   ├── axi_crossbar/wr/        AXI 写地址、写数据和响应通路
 │   │   ├── dma/3interface/        AXI、AXI-Stream、描述符接口定义
 │   │   ├── dma/                   DMA 控制及共享 BRAM 接入
-│   │   └── mmio_router.sv         DMA/Conv/Pool/FC 寄存器路由
+│   │   └── mmio_router.sv         DMA/Conv/Pool/FC/Camera 寄存器路由
+│   ├── camera/
+│   │   ├── config/                OV5645 ROM、上电复位控制和 SCCB/I2C
+│   │   ├── ip/                    MIPI CSI-2 RX IP 与生成/时钟说明
+│   │   └── video_process/         灰度、采集、4×4 平均池化、打包和 AXI 写
 │   ├── loader/uart/               串口物理收发
 │   ├── loader/                    下载协议与复位/CDC 控制
 │   └── coprocessor/
@@ -128,7 +160,7 @@ CPU 采用顺序五级流水，流水级之间使用寄存器保存指令信息�
 
 ICache 和 DCache 都是两路组相联、32 组、每行一个 32 位字，每个 Cache 的有效数据容量为 **256 字节**，不含 tag、valid 和替换状态。DCache 的 store 采用写穿方式，不依靠脏行回写把模型结果同步到 DDR。
 
-顶层把 `dma_irq | conv_irq | fc_irq | pool_irq` 汇总到机器外部中断输入，没有独立 PLIC。CPU 以 `mstatus.MIE`、`mie.MEIE` 控制是否响应。当前 CNN 程序默认使用机器外部中断保存完成事件，`build_cnn.py --polling` 可恢复原 MMIO 轮询；上面的既有上板截图来自原轮询版本，中断版本仍需单独上板验证。等待完成时可执行非阻塞的 `cnn_background_work()`；默认钩子为空闲循环，未实现 WFI 休眠。详见 [中断模式说明](cnn_test/INTERRUPTS.md)。DMA 写 DDR 后仍会通过独立完成脉冲触发 DCache 失效，这条一致性通路不受软件中断使能影响。
+顶层把 `dma_irq | conv_irq | fc_irq | pool_irq | camera_irq` 汇总到机器外部中断输入，没有独立 PLIC。CPU 以 `mstatus.MIE`、`mie.MEIE` 控制是否响应。当前 CNN 程序默认使用机器外部中断保存完成事件，`build_cnn.py --polling` 可恢复原 MMIO 轮询；上面的固定图片自检截图来自原轮询版本，摄像头模式使用当前默认的中断完成处理。等待完成时可执行非阻塞的 `cnn_background_work()`；默认钩子为空闲循环，未实现 WFI 休眠。详见 [中断模式说明](cnn_test/INTERRUPTS.md)。DMA 写 DDR 后仍会通过独立完成脉冲触发 DCache 失效，这条一致性通路不受软件中断使能影响。
 
 编译目标使用 RV32I，不使用 M/C 扩展。自定义 CMP/CMPU 的指令定义见 `rtl/define.sv`；需要使用扩展时应由匹配的编译器或汇编生成。当前 FENCE/FENCE.I 译码仅传递标志，尚无独立的 Cache 刷新或总线排空单元，不能把它描述为完整的标准屏障实现。
 
@@ -147,8 +179,8 @@ ICache 和 DCache 都是两路组相联、32 组、每行一个 32 位字，每�
 | `bridge/axi2native_mmio.sv`、`axi2native_uart.sv` | 在目标端把 AXI 事务转换回模块的原生请求/响应 |
 | `axi_crossbar/rd/` | 读地址仲裁、地址译码、读数据返回及读通道寄存器 |
 | `axi_crossbar/wr/` | 写地址仲裁、写数据路由、写响应返回及写通道寄存器 |
-| `axi_crossbar/taxi_axi_crossbar_3s.sv` | 合并读写 Crossbar，顶层实际配置为 6 入 3 出 |
-| `mmio_router.sv` | 按地址把原生 MMIO 请求分派给 DMA、Conv、Pool、FC，并路由响应 |
+| `axi_crossbar/taxi_axi_crossbar_3s.sv` | 合并读写 Crossbar，顶层实际配置为 7 入 3 出 |
+| `mmio_router.sv` | 按地址把原生 MMIO 请求分派给 DMA、Conv、Pool、FC、Camera，并路由响应 |
 
 `rd/` 和 `wr/` 保留了同名公共模块，例如 `taxi_axi_if`、`taxi_arbiter`、`taxi_penc`、`taxi_axi_crossbar_addr`。构建时公共定义只选一份，不能递归加入全部 `.sv` 后重复定义模块。`dma/3interface/axi.sv` 也定义 `taxi_axi_if`。
 
@@ -290,7 +322,72 @@ half_sel    = (idx_left >> 1) & 1
 
 读请求发完、数据已进入缓存、PE 结果收齐、最后一个结果实际写入是不同事件。各控制器分别使用相应 valid/done 驱动阶段切换；软件使用模块 STATUS 中锁存的 done 判断整层完成。
 
-## 9. Loader：`rtl/loader/` 与 `download/`
+## 9. Camera：`rtl/camera/`
+
+### 配置与硬件数据通路
+
+当前传感器配置为 OV5645、双数据 lane MIPI CSI-2、居中正方形取景，输出 **128×128 RGB565**。摄像头模块提供 24MHz XCLK；SoC 配置逻辑使用 100MHz 系统时钟，SCCB/I2C 默认 100kHz，7 位设备地址为 `0x3C`。
+
+```mermaid
+flowchart LR
+    SENSOR["OV5645：128×128 RGB565"] --> RX["MIPI CSI-2 RX"]
+    RX --> RGB["axis2rgb888"]
+    RGB --> GRAY["gray_picture：8 位灰度"]
+    GRAY --> CAPTURE["帧采集控制 / 输入缓存"]
+    CAPTURE --> AVG["4×4 平均池化：32×32"]
+    AVG --> BIN["阈值二值化：0 / 127"]
+    BIN --> PACK["native2axis：4 像素打包为 32 位"]
+    PACK --> FIFO["异步 FIFO"]
+    FIFO --> WRITE["axis2axiw"]
+    WRITE --> DDR["Crossbar / DDR：0x10020000"]
+    DDR --> DMA["DMA：1024 字节输入快照"]
+    DMA --> BRAM["共享 BRAM 输入区：0x2000"]
+    BRAM --> CNN["Conv / Pool / FC"]
+```
+
+| 文件 / 目录 | 职责 |
+| --- | --- |
+| [config/configuration_rom.sv](rtl/camera/config/configuration_rom.sv) | OV5645 寄存器表，设置 RGB565、输出尺寸、曝光和写后延时 |
+| [config/ctrl.sv](rtl/camera/config/ctrl.sv) | 上电等待、RESET/PWDNB 时序、等待接收器就绪、逐项配置和错误停止 |
+| [config/config_top.sv](rtl/camera/config/config_top.sv)、`i2c_dri.sv` | 连接 ROM/CTRL/I2C，使用 SCCB/I2C 写入 16 位地址、8 位数据寄存器 |
+| [ip/README.md](rtl/camera/ip/README.md) | `mipi_csi2_rx_subsystem_0` 的配置与生成入口 |
+| [video_process/video_process_top.sv](rtl/camera/video_process/video_process_top.sv) | 连接接收、灰度、采集、池化、打包、FIFO 和 AXI 写通路 |
+| `video_process/axis2rgb888.sv`、`gray_picture.sv` | 将 MIPI 视频流中的 RGB565 转换为 RGB888，再生成 0～255 灰度 |
+| `video_process/video_capture_ctrl.sv`、`video_input_buffer.sv` | 按帧采集 16384 个有效源像素，并缓存、传递握手数据 |
+| [video_process/process_way/avg_pool_4x4.sv](rtl/camera/video_process/process_way/avg_pool_4x4.sv) | 非重叠 4×4 平均池化及固定阈值判断，输出 1024 个 INT8 像素 |
+| `video_process/native2axis.sv`、`aysnc_fifo/`、`axis2axiw.sv` | 像素打包、FIFO 缓冲和 AXI 突发写入，以及 Camera MMIO/中断 |
+
+每个 4×4 窗口使用 12 位累加，包含当前输入在内共 16 个像素，按以下规则生成一个输出：
+
+```text
+average = floor(sum_of_16_gray_pixels / 16)
+output  = average < 128 ? 127 : 0
+```
+
+暗色笔画映射为 `127`，亮色背景映射为 `0`，已经完成反色和输入范围转换，不再重复执行 `255-gray` 或右移量化。阈值由 `video_process_top.sv` 中的 `POOL_THRESHOLD = 8'd128` 固定；原双线性 scaler、反色和量化路径保留为注释。相机预处理的 **4×4 平均池化**独立于 CNN 内部的 **2×2 最大池化**。
+
+每帧输出 `32×32=1024` 字节，按行排列，连续四个像素依次放入 32 位字的低到高字节，共 256 个字，经一次 256 拍 AXI 突发写入 DDR `0x10020000`。Camera MMIO 地址范围为 `0x40008000～0x40008FFF`，`CONTROL/STATUS` 的偏移分别为 `0x00/0x04`；完成或错误事件由 `camera_irq` 通知 CPU。
+
+### 时钟、复位与输入快照
+
+`soc_top` 在 FPGA 内使用 `PLLE4_BASE + BUFG` 将板载 100MHz 转为 D-PHY 所需的 200MHz 参考时钟，`clk_200m` 不再是外部引脚。配置复位 `cam_config_rst_n` 由系统 `rst_n` 同步释放；`ctrl.sv` 驱动 `cam_rst_n` 和 `cam_pwdn` 完成硬件时序，顶层负责连接。这里 `cam_pwdn` 对应 OV5645 的低有效 PWDNB，正常工作时与 `cam_rst_n` 一样保持高电平。
+
+配置启动受 `cpu_rst_n` 的 `start_enable` 和 MIPI 接收器就绪条件控制，Loader 下载期间不会开始配置并产生摄像头写流量。ROM 参数和时钟/复位说明分别见 [OV5645_CONFIGURATION.md](rtl/camera/config/OV5645_CONFIGURATION.md) 和 [MIPI_CLOCKING.md](rtl/camera/ip/MIPI_CLOCKING.md)。
+
+软件启动后先跳过 **20 个完成的摄像头帧**，等待自动曝光/增益稳定；这不是 20 帧求平均。随后将完成帧的 1024 字节经 DMA 搬到共享 BRAM 输入区，再逐层执行 CNN。中断仅记录和清除事件，搬图、推理及串口打印由主循环执行。当前使用单个 DDR 帧缓冲，软件检查搬运期间的新完成/错误事件，但不能检测尚未完成的覆盖写入；不应把它当作具有读写所有权保护的双缓冲。
+
+### 拍摄与串口预览
+
+**手写数字的笔画要粗：使用白纸和粗黑笔，避免细线、空心字及过小的数字。** 将一个数字完整放在取景中央，四周留白，在均匀照明下拍摄，避免手指、纸边、杂物和阴影进入有效画面。原图经 4×4 平均后才二值化，过细的笔画可能被背景平均而消失。
+
+默认在第 `1、21、41、…` 个推理帧打印一次输入预览，由 `CNN_CAMERA_PREVIEW_INTERVAL=20` 控制；这与启动时跳过 20 个摄像头帧是两个独立设置。预览读取的是本次推理已经保存到 BRAM 的输入快照，显示的是处理后的 32×32 图像。
+
+- `chars_per_pixel=2`：每个像素打印两个字符，以便观察图像比例；仍然是 32 列像素。
+- 当前二值输入中，空格表示背景 `0`，`@@` 表示一个笔画像素 `127`，不是数字 `0`。
+- `out_of_range=0` 表示没有超过 `0～127` 的输入值，不等于识别准确率通过。
+- `CNN_CAMERA_PREVIEW=0` 可关闭预览，需要重新编译、下载两个 `.bin`；串口打印和预览所需的额外 DMA 会影响运行速度，不用其间隔推算纯 CNN 吞吐率。
+
+## 10. Loader：`rtl/loader/` 与 `download/`
 
 | 文件 | 职责 |
 | --- | --- |
@@ -305,7 +402,7 @@ Loader 通过 Bridge 和 AXI 将程序、模型数据写到 DDR，下载期间 C
 
 当前 Loader 分别限制 128KiB 指令区和 128KiB 数据区，这不表示 DDR 芯片的总容量只有这么大。Loader 使用 `uart_rxd/uart_txd`；CPU 推理日志从独立的 `dbg_uart_txd` 输出，当前使用 115200 baud、8N1。
 
-## 10. 地址空间、寄存器与量化
+## 11. 地址空间、寄存器与量化
 
 ### CPU、DMA 和共享 BRAM 的地址
 
@@ -319,6 +416,8 @@ Loader 通过 Bridge 和 AXI 将程序、模型数据写到 DDR，下载期间 C
 | `0x40005000～0x40005FFF` | Conv MMIO |
 | `0x40006000～0x40006FFF` | Pool MMIO |
 | `0x40007000～0x40007FFF` | FC MMIO |
+| `0x40008000～0x40008FFF` | Camera MMIO |
+| AXI `0x10020000～0x100203FF` | Camera 的 1024 字节帧缓冲，软件经 DMA 搬到 BRAM 输入区 |
 
 DMA SRC/DST 使用 AXI 地址，CPU 使用自身的数据指针。对当前数据区，两者的换算是 `dma_addr = cpu_addr - 0x80000000 + 0x10000000`，这条公式不用于转换 MMIO 地址。
 
@@ -387,13 +486,13 @@ output_int8 ≈ clamp(round(acc × MULT / 2^SHIFT))
 
 RTL 使用 64 位有符号乘积与算术右移。Conv 负数由 ReLU 归零；FC 支持负数，采用最近整数、半值远离 0 的舍入，最终限幅到 `[-128,127]`，开启 ReLU 时负数归零。Pool 沿用输入尺度，不另外量化。
 
-## 11. 模型、裸机程序与设计图目录
+## 12. 模型、裸机程序与设计图目录
 
 ### `cnn_test/`：推理调度与模型下载包
 
 | 文件 | 职责 |
 | --- | --- |
-| [cnn_inference.c](cnn_test/cnn_inference.c) | 裸机入口、CSR/串口操作、DMA 配置、七层计算调度、模型校验及逐层结果比较 |
+| [cnn_inference.c](cnn_test/cnn_inference.c) | 裸机入口、CSR/串口操作、DMA 配置、实时摄像头推理及预览；自检模式提供逐层比较 |
 | [linker_cnn.ld](cnn_test/linker_cnn.ld) | 指令区、程序数据区、模型预留区和栈顶布局；为栈至少保留 4KiB |
 | [export_layer_results.py](cnn_test/export_layer_results.py) | 从实际 INT8/INT32 参数重算整数网络，导出 CHW/神经元编号顺序的 CSV，不依赖 PyTorch |
 | [pack_model.py](cnn_test/pack_model.py) | 校验参数大小、合并模型、分配 DDR 地址，生成地址表与 D0 下载包 |
@@ -404,7 +503,7 @@ RTL 使用 64 位有符号乘积与算术右移。Conv 负数由 ReLU 归零；F
 
 实际交叉构建会将本次配套头文件写到 `cnn_test/build/cnn/assets/`，通过 `-I` 指定该目录。`.h` 是编译输入；地址宏成为程序常量，参考数组成为程序数据。图片、权重、偏置的原始字节另外打包到模型区。
 
-程序每层完成后通过 DMA 将输出搬回 DDR，逐个按有符号 INT8 比较。全部一致才启动下一层，发现错误则打印位置、实际值、预期值并停止。DMA 写后 DCache 失效负责让 CPU 读取新数据，C 的 `volatile` 不代替硬件一致性处理。
+程序每层完成后通过 DMA 将输出搬回 DDR。`--self-test` 模式逐个按有符号 INT8 比较，全部一致才启动下一层，发现错误则打印位置、实际值、预期值并停止；默认摄像头模式没有固定逐层答案，完成七层计算后打印实时分类和十个分数。DMA 写后 DCache 失效负责让 CPU 读取新数据，C 的 `volatile` 不代替硬件一致性处理。
 
 | 阶段 | 输入 → 输出 | 有效 INT8 输出数 |
 | --- | --- | ---: |
@@ -452,11 +551,11 @@ CSV 中 `value_int8` 对应硬件写回值，`accum_int32` 是加偏置后的量
 
 draw.io 文件可以继续编辑；设计草图记录了演进过程，当前实际接线和模块职责以 RTL 为准，例如 Pool 已采用无整行缓存实现。
 
-## 12. 构建与下载
+## 13. 构建与下载
 
 ### FPGA 工程
 
-已验证的板级环境为 Vivado 2022.2、`xczu5ev-sfvc784-2-e`、100MHz 差分输入时钟，需要匹配板卡的 DDR4 MIG、AXI Clock Converter、ILA 和 XDC 引脚/时钟约束。生成 IP 和板级约束没有包含在当前仓库的 RTL 目录中。
+已验证的板级环境为 Vivado 2022.2、`xczu5ev-sfvc784-2-e`、100MHz 差分输入时钟，需要匹配板卡的 DDR4 MIG、AXI Clock Converter、ILA、MIPI CSI-2 RX 和 XDC 引脚/时钟约束。MIPI RX 的 XCI 与生成说明位于 `rtl/camera/ip/`；DDR 等板级 IP 和 XDC 仍依赖独立工程的本地路径。
 
 本地已验证构建使用工作区同级的 `5pipeline_tcl/5pipeline.tcl` 和其 `src/`、`xdc/`、MIG IP 路径。维护该独立工程时，需要把当前 `rtl/` 的对应源文件同步进其源文件清单：
 
@@ -472,7 +571,7 @@ $env:BUILD_STAGE = "bitstream"
 
 ### 构建真实模型的裸机程序
 
-从仓库根目录执行，`--llvm-bin` 指向同时包含 RISC-V Clang 和 `ld.lld` 的目录，`--model-dir` 指向完整参数目录：
+从仓库根目录执行，`--llvm-bin` 指向同时包含 RISC-V Clang 和 `ld.lld` 的目录，`--model-dir` 指向完整参数目录。**默认构建为摄像头实时推理**，持续处理新输入；模型包中的测试图片不会固定为实时输入：
 
 ```bash
 python3 cnn_test/build_cnn.py \
@@ -480,7 +579,18 @@ python3 cnn_test/build_cnn.py \
   --model-dir parameter_example
 ```
 
-重新训练后如参数在根目录 `soc_export_int8/`，将最后一项改为 `--model-dir soc_export_int8`。准备和打包脚本只依赖 Python 标准库；交叉编译使用 RV32I/ILP32，较新 LLVM 若要求显式 CSR 扩展，可传 `--march rv32i_zicsr`。
+如需恢复固定图片、逐层比较全部 8050 个输出，在构建时加 `--self-test`：
+
+```bash
+python3 cnn_test/build_cnn.py \
+  --llvm-bin /home/shenjiexiang/llvm-project/build/bin \
+  --model-dir parameter_example \
+  --self-test
+```
+
+摄像头模式可加 `--frames 100`，处理 100 个推理帧后停止；默认 `--frames 0` 连续运行。两种输入模式默认使用机器外部中断，可加 `--polling` 改为轮询。切换模式后重新下载本次生成的两个 `.bin`。
+
+重新训练后如参数在根目录 `soc_export_int8/`，将模型目录参数改为 `--model-dir soc_export_int8`。准备和打包脚本只依赖 Python 标准库；交叉编译使用 RV32I/ILP32，较新 LLVM 若要求显式 CSR 扩展，可传 `--march rv32i_zicsr`。
 
 | 生成文件，相对于 `cnn_test/build/cnn/` | 用途 |
 | --- | --- |
@@ -502,11 +612,11 @@ python3 cnn_test/build_cnn.py \
 py .\download\peqflash.py -serport COM4 -baud 115200 -imembin .\cnn_test\build\cnn\cnn_iram.bin -dmembin .\cnn_test\build\cnn\cnn_dmem.bin
 ```
 
-`COM4` 替换为实际 Loader 串口，下载工具依赖 `pyserial`。在启动前打开 `dbg_uart_txd` 对应的调试串口，以 115200、8N1 观察逐层输出数、首批错误或最终分类结果。
+`COM4` 替换为实际 Loader 串口，下载工具依赖 `pyserial`。在启动前打开 `dbg_uart_txd` 对应的调试串口，以 115200、8N1 观察输出：摄像头模式先打印预热信息，然后周期性打印输入预览和 `Frame ... prediction=... scores: ...`；`--self-test` 模式打印逐层比较及最终参考匹配结果。实时摄像头模式不会打印 8050 项固定图片参考全部匹配。
 
-## 13. 实现记录与验证边界
+## 14. 实现记录与验证边界
 
-以下是 2026-10-15 一次完整 SoC 实现报告的记录，器件为 `xczu5ev-sfvc784-2-e`，包含 CPU、DDR 接口、DMA、三个计算核和调试逻辑。它们是该次构建的结果，后续修改需要重新生成报告。
+以下是 2026-10-15 一次完整 SoC 实现报告的记录，器件为 `xczu5ev-sfvc784-2-e`，包含 CPU、DDR 接口、DMA、三个计算核和调试逻辑。它们是该次构建的结果，早于后续 Camera 接入与平均池化预处理改动；不能作为当前摄像头版本的资源和时序结果，后续修改需要重新生成报告。
 
 | 指标 | 实现结果 |
 | --- | ---: |
@@ -527,7 +637,7 @@ py .\download\peqflash.py -serport COM4 -baud 115200 -imembin .\cnn_test\build\c
 
 本工程当前验证基线是上述固定网络、合法偶数 Pool 尺寸、FC 输入最多 400 个特征和串行任务调度。当前源码目录未保留独立 testbench；上板程序提供逐层结果校验。扩大网络形状、改变时钟/端口时延或增加并行任务时，应分别验证存储容量、返回数据与控制标志对齐、尾组/尾字节和共享 BRAM 访问次序。
 
-## 14. License 与第三方来源
+## 15. License 与第三方来源
 
 工程沿用 **CERN-OHL-S-2.0**。项目适用范围和未经改写的标准正文见 [LICENSE](LICENSE)，第三方文件来源与各自授权见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。CERN 官方入口见 [CERN Open Hardware Licence](https://cern-ohl.web.cern.ch/)。
 
