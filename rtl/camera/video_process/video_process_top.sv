@@ -64,13 +64,16 @@ module video_process_top #(
     output wire                       m_axi_bready
 );
 
-localparam [7:0] INPUT_X_LAST  = 8'd127;
-localparam [6:0] INPUT_Y_LAST  = 7'd127;
-localparam [4:0] OUTPUT_X_LAST = 5'd31;
-localparam [4:0] OUTPUT_Y_LAST = 5'd31;
+localparam [7:0] POOL_THRESHOLD = 8'd128;
+
+// Previous scaler configuration kept as a commented reference.
+//localparam [7:0] INPUT_X_LAST  = 8'd127;
+//localparam [6:0] INPUT_Y_LAST  = 7'd127;
+//localparam [4:0] OUTPUT_X_LAST = 5'd31;
+//localparam [4:0] OUTPUT_Y_LAST = 5'd31;
 // Q4.14: 128/32 = 4 on both axes; 4 * 2^14 = 65536.
-localparam [17:0] X_SCALE = 18'd65536;
-localparam [17:0] Y_SCALE = 18'd65536;
+//localparam [17:0] X_SCALE = 18'd65536;
+//localparam [17:0] Y_SCALE = 18'd65536;
 
 wire [15:0] mipi_video_tdata;
 wire [9:0]  mipi_video_tdest;
@@ -84,8 +87,10 @@ wire [7:0]  capture_data;
 wire        capture_valid, video_ready, scaler_input_ready;
 wire [7:0]  scaler_input_data;
 wire        scaler_start, scaler_input_valid;
-wire [7:0]  scaler_data;
-wire        scaler_valid, next_data;
+//wire [7:0]  scaler_data;
+//wire        scaler_valid, next_data;
+wire [7:0]  pool_data;
+wire        pool_valid, next_data;
 wire [36:0] fifo_wr_data, fifo_rd_data;
 wire        pack_valid, pack_ready;
 wire        fifo_full, fifo_almost_full, fifo_empty;
@@ -93,10 +98,12 @@ wire        fifo_rd_en, fifo_rd_valid;
 
 wire write_done, write_error;
 assign camera_write_done = write_done;
-wire [7:0] quant_data;//输入的int8要根据cnn的要求做量化
-wire [7:0] processed_gray;//将白纸黑字转换成mnist要求的黑纸白字
-assign processed_gray = 8'd255 - scaler_data;
-assign quant_data = {1'b0 , processed_gray[7:1]};
+// Pool output already contains binary INT8 values (0/127).
+// Previous inversion and quantization kept below, disabled.
+//wire [7:0] quant_data;//输入的int8要根据cnn的要求做量化
+//wire [7:0] processed_gray;//将白纸黑字转换成mnist要求的黑纸白字
+//assign processed_gray = 8'd255 - scaler_data;
+//assign quant_data = {1'b0 , processed_gray[7:1]};
 
 // FIFO 接收条件同时反馈给打包模块，保证双方使用同一个写入握手。
 assign pack_ready = rst_n && !fifo_full;
@@ -205,49 +212,70 @@ video_input_buffer #(
     .video_ready(video_ready),
     .data_o(scaler_input_data),
     .data_valid_o(scaler_input_valid),
-    // start当拍缩放器执行初始化，不能消耗缓冲中的像素。
+    // start initializes the pooling state; retain buffered pixels on that cycle.
     .data_ready_i(scaler_input_ready && !scaler_start)
 );
 
-streamScaler #(
-    .DATA_WIDTH(8),
-    .CHANNELS(1),
-    .DISCARD_CNT_WIDTH(8),
-    .INPUT_X_RES_WIDTH(8),
-    .INPUT_Y_RES_WIDTH(7),
-    .OUTPUT_X_RES_WIDTH(5),
-    .OUTPUT_Y_RES_WIDTH(5),
-    .SCALE_INT_BITS(4),
-    .SCALE_FRAC_BITS(14),
-    .BUFFER_SIZE(4)
-) u_scaler (
+// 4x4 average pooling and thresholding: 128x128 gray -> 32x32 INT8 (0/127).
+avg_pool_4x4 #(
+    .INPUT_WIDTH(128),
+    .INPUT_HEIGHT(128),
+    .THRESHOLD(POOL_THRESHOLD)
+) u_avg_pool_4x4 (
     .clk(video_clk),
-    .rst(!video_rst_n),
-    .dIn(scaler_input_data),
-    .dInValid(scaler_input_valid),
-    .nextDin(scaler_input_ready),
+    .rst_n(video_rst_n),
     .start(scaler_start),
-    .dOut(scaler_data),
-    .dOutValid(scaler_valid),
-    .nextDout(next_data),
-    .inputDiscardCnt(8'd0),
-    .inputXRes(INPUT_X_LAST),
-    .inputYRes(INPUT_Y_LAST),
-    .outputXRes(OUTPUT_X_LAST),
-    .outputYRes(OUTPUT_Y_LAST),
-    .xScale(X_SCALE),
-    .yScale(Y_SCALE),
-    .leftOffset(19'd0),
-    .topFracOffset(14'd0),
-    .nearestNeighbor(1'b0)
+    .data_i(scaler_input_data),
+    .data_valid_i(scaler_input_valid),
+    .data_ready_o(scaler_input_ready),
+    .data_o(pool_data),
+    .data_valid_o(pool_valid),
+    .data_ready_i(next_data)
 );
+
+// Previous bilinear scaler kept as a commented reference.
+//streamScaler #(
+//    .DATA_WIDTH(8),
+//    .CHANNELS(1),
+//    .DISCARD_CNT_WIDTH(8),
+//    .INPUT_X_RES_WIDTH(8),
+//    .INPUT_Y_RES_WIDTH(7),
+//    .OUTPUT_X_RES_WIDTH(5),
+//    .OUTPUT_Y_RES_WIDTH(5),
+//    .SCALE_INT_BITS(4),
+//    .SCALE_FRAC_BITS(14),
+//    .BUFFER_SIZE(4)
+//) u_scaler (
+//    .clk(video_clk),
+//    .rst(!video_rst_n),
+//    .dIn(scaler_input_data),
+//    .dInValid(scaler_input_valid),
+//    .nextDin(scaler_input_ready),
+//    .start(scaler_start),
+//    .dOut(scaler_data),
+//    .dOutValid(scaler_valid),
+//    .nextDout(next_data),
+//    .inputDiscardCnt(8'd0),
+//    .inputXRes(INPUT_X_LAST),
+//    .inputYRes(INPUT_Y_LAST),
+//    .outputXRes(OUTPUT_X_LAST),
+//    .outputYRes(OUTPUT_Y_LAST),
+//    .xScale(X_SCALE),
+//    .yScale(Y_SCALE),
+//    .leftOffset(19'd0),
+//    .topFracOffset(14'd0),
+//    .nearestNeighbor(1'b0)
+//);
 
 // 每四个 INT8 像素打包成一个 32 位字，并携带 keep、last。
 native2axis u_native2axis (
     .cam_pclk(video_clk),
     .rst_n(video_rst_n),
-    .data_i(quant_data),
-    .data_valid_i(scaler_valid),
+    //.data_i(quant_data),             // Previous scaler path.
+    //.data_valid_i(scaler_valid),
+    .data_i(pool_data),
+    // native2axis consumes pulses; only assert on a pool output transfer.
+    .data_valid_i(pool_valid && next_data),
     .next_data(next_data),
     .fifo_in(fifo_wr_data),
     .axis_ready(pack_ready),

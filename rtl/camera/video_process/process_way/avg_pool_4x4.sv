@@ -24,7 +24,9 @@ reg [1:0] group_cnt;//组内计数器
 reg [4:0] reg_cnt;//记录32个4像素的累加和
 reg [1:0] row_cnt; // 当前是四行中的第0、1、2、3行
 wire sum_valid;
+wire [11:0] sum_next;
 assign sum_valid = (row_cnt == 2'd3) && (group_cnt == 2'd3);
+assign sum_next = ((row_cnt == 2'd0) && (group_cnt == 2'd0)) ? {4'b0, data_i} : sum_reg[reg_cnt] + {4'b0, data_i};
 
 always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -69,13 +71,24 @@ always_ff @(posedge clk or negedge rst_n)begin
         end
     end
     else if(data_valid_i && data_ready_o)begin 
-        if(group_cnt < 2'd3)begin
-            sum_reg[reg_cnt] <= sum_reg[reg_cnt] + data_i;
-        end
-        else begin
-            sum_reg[reg_cnt] <= data_i;
+        sum_reg[reg_cnt] <= sum_next;
+    end
+end
+
+always_ff @(posedge clk or negedge rst_n)begin
+    if(!rst_n || start)begin
+        data_o <= 'd0;
+        data_valid_o <= 1'b0;
+    end
+    else if (!data_valid_o || data_ready_i) begin
+        data_valid_o <= 1'b0;
+        if (data_valid_i && data_ready_o && sum_valid) begin
+            data_o <= (sum_next[11:4] < THRESHOLD) ? 8'd127 : 8'd0;
+            data_valid_o <= 1'b1;
         end
     end
 end
+
+assign data_ready_o = rst_n && !start && (!data_valid_o || data_ready_i);
 
 endmodule

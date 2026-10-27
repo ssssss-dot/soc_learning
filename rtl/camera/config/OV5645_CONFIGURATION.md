@@ -1,5 +1,29 @@
 # OV5645 ROM：128×128 RGB565 / MIPI CSI-2
 
+## Current processing path: 4x4 average pool + threshold
+
+The sensor still outputs centered 128x128 RGB565. The FPGA path is now:
+
+`MIPI RX -> axis2rgb888 -> gray_picture -> video_capture_ctrl -> video_input_buffer -> avg_pool_4x4 -> native2axis -> async_fifo -> axis2axiw`.
+
+- The active module is `video_process/process_way/avg_pool_4x4.sv`, copied
+  from the latest user-confirmed implementation to the Tcl source tree.
+  It uses fixed 128-pixel rows; keep INPUT_WIDTH/INPUT_HEIGHT at 128.
+- Each non-overlapping 4x4 gray window is summed in 12 bits, divided by 16
+  (integer truncation), then compared with POOL_THRESHOLD=128 in
+  video_process_top.sv. Dark windows output 127; other windows output 0.
+- Pool output already has the CNN INT8 range. The previous bilinear scaler,
+  inversion and quantization remain in video_process_top.sv as comments.
+- Pool output is a held valid/ready interface. native2axis receives
+  `pool_valid && next_data`, and the pool receives next_data as its ready.
+  This prevents repeated packing while the FIFO applies backpressure.
+- Capture remains 16384 valid source pixels; output remains 1024 INT8 bytes,
+  packed as one 256-beat 32-bit AXI burst. Existing C input dimensions stay.
+- 5pipeline.tcl now includes the actual process_way/avg_pool_4x4.sv path.
+- Rebuild/program soc_top.bit for this hardware change. Image quality and
+  recognition accuracy still need physical-board validation.
+
+
 当前 `configuration_rom.sv` 为 OV5645 配置表，接口保持不变。
 
 ## 配置前提与输出
@@ -99,7 +123,7 @@ Vivado 2022.2 的 xvlog、xelab、xsim 检查通过：遍历全部 1024 个索�
 - Register definitions were checked against the local OV5645 datasheet
   version 2.01, sections 4.5, 4.6 and tables 4-4, 4-5 and 7-7.
 
-## 128x128 sensor output -> 32x32 CNN input
+## Original 128x128 bilinear path (historical reference)
 
 - Sensor readout bounds remain X=0..2623, Y=6..1949. With 2x binning this
   yields 1312x972 samples. Section 4.2 of OV5645 datasheet v2.01 defines
@@ -124,7 +148,7 @@ Vivado 2022.2 的 xvlog、xelab、xsim 检查通过：遍历全部 1024 个索�
   do not model the sensor ISP or MIPI PHY. Verify 128 pixels/line, 128 lines,
   focus and actual crop on the physical board.
 
-## Validation of the 128x128 update
+## Validation of the original 128x128 bilinear update
 
 Vivado 2022.2 xvlog/xelab/xsim passed with the Tcl project source files:
 
@@ -145,3 +169,30 @@ Vivado 2022.2 xvlog/xelab/xsim passed with the Tcl project source files:
 Temporary test sources and logs for this update:
 `C:/Users/jacks/AppData/Local/Temp/camera_128_sz83brx9/sim/`.
 The baseline file backups and SHA256 manifest are in its parent directory.
+
+## Validation of average-pool integration
+
+Vivado 2022.2 xvlog/xelab/xsim passed using the actual Tcl source files.
+Four full video-chain cases each process two successive frames:
+
+- Digit-shaped image followed by its inverse.
+- White then black image (output 0 then 127).
+- Alternating windows at sums 2047/2048 (averages 127/128) with AXIS bubbles.
+- Two RGB ramps, source bubbles, different AXI/video clocks, long initial
+  AXI AW/W stalls and periodic W stalls. The pool held an output for 16873
+  video cycles in total, without data/valid changes while stalled.
+
+Every output byte was checked against an independent RGB expansion,
+grayscale, 16-pixel area sum and threshold model. Each source frame had
+16384 captured and pool-accepted pixels, 1024 pool-output transfers, and
+256 AXI words (1024 bytes). AW geometry, WSTRB, WLAST, stable stalled W
+signals, capture restart and empty input buffering at frame end passed.
+All 104 entries in the active Tcl source list exist, including the new pool.
+
+MIPI RX is replaced by a behavioral AXIS source and DDR by an AXI write
+sink in these tests. Real MIPI PHY, DDR and recognition quality need an
+on-board check after rebuilding/programming the bitstream.
+
+Temporary tests, golden images and logs:
+`C:/Users/jacks/AppData/Local/Temp/pool_integration_5mwot_5m/sim/`.
+Backups and SHA256 manifest are in its parent directory.
